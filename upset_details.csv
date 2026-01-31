@@ -1,4 +1,4 @@
-﻿season,week,judge_lowest,actual_eliminated
+﻿season,week,judge_lowest,actual_exited
 1,2,Evander Holyfield,Trista Sutter
 1,4,Joey McIntyre,Rachel Hunter
 2,1,Master P,Kenny Mayne
@@ -7,8 +7,8 @@
 2,7,Jerry Rice,Lisa Rinna
 3,2,Jerry Springer,Shanna Moakler
 3,3,Emmitt Smith,Harry Hamlin
-3,4,Jerry Springer,Vivica A. Fox
-3,5,Jerry Springer,Willa Ford
+3,4,Sara Evans,Vivica A. Fox
+3,5,Sara Evans,Willa Ford
 4,2,Clyde Drexler,Paulina Porizkova
 4,3,Clyde Drexler,Shandi Finnessey
 4,4,Clyde Drexler,Leeza Gibbons
@@ -24,7 +24,7 @@
 6,7,Cristian de la Fuente,Shannon Elizabeth
 6,8,Marissa Jaret Winokur,Mario
 7,1,Jeffrey Ross,Ted McGinley
-7,2,Cloris Leachman,Kim Kardashian
+7,2,Cloris Leachman,Misty May-Treanor
 7,5,Cloris Leachman,Toni Braxton
 7,7,Warren Sapp,Susan Lucci
 7,8,Cody Linley,Maurice Greene
@@ -74,7 +74,6 @@
 17,8,Bill Engvall,Brant Daugherty
 17,9,Bill Engvall,Elizabeth Berkley Lauren
 17,10,Bill Engvall,Leah Remini
-18,2,Candace Cameron Bure,Sean Avery
 18,5,Drew Carey,Cody Simpson
 18,6,Candace Cameron Bure,Drew Carey
 18,8,James Maslow,Danica McKellar
@@ -94,7 +93,7 @@
 20,9,Noah Galloway,Nastia Liukin
 21,2,Chaka Khan,Victor Espinoza
 21,7,Alek Skarlatos,Hayes Grier
-21,9,Alek Skarlatos,Alexa PenaVega
+21,9,Tamar Braxton,Alexa PenaVega
 21,11,Alek Skarlatos,Carlos PenaVega
 22,4,Doug Flutie,Marla Maples
 22,7,Jodie Sweetin,Kim Fields
@@ -120,7 +119,7 @@
 27,6,John Schneider,Mary Lou Retton
 27,7,Joe Amabile,John Schneider
 27,8,Bobby Bones,Juan Pablo Di Pace
-28,2,Lamar Odom,Mary Wilson
+28,2,Lamar Odom,Ray Lewis
 28,6,Sean Spicer,Sailor Brinkley-Cook
 28,7,Sean Spicer,Karamo Brown
 28,8,Sean Spicer,Kate Flannery
@@ -135,7 +134,7 @@
 31,1,Vinny Guadagnino,Jason Lewis
 31,2,Cheryl Ladd,Teresa Giudice
 31,3,Vinny Guadagnino,Cheryl Ladd
-31,5,Vinny Guadagnino,Joseph Baena
+31,5,Vinny Guadagnino,Selma Blair
 31,6,Vinny Guadagnino,Jessie James Decker
 31,7,Vinny Guadagnino,Jordin Sparks
 31,8,Vinny Guadagnino,Heidi D'Amelio

@@ -125,6 +125,207 @@ class DWTSAdvAnalysis:
             plt.show()
         plt.close()
 
+    def plot_comprehensive_season_overview(self, estimation_results=None, save=True):
+        """
+        综合可视化：展示34季的评分规则、淘汰动态和决赛结构
+
+        参数:
+        - estimation_results: FanPercentEstimator的estimation_results DataFrame
+        - save: 是否保存图片
+        """
+        print("\n" + "=" * 60)
+        print("Creating Comprehensive Season Overview Visualization")
+        print("=" * 60)
+
+        # 使用estimation_results或self.df
+        if estimation_results is not None:
+            data = estimation_results.copy()
+            # 确保有is_exited列，如果没有则尝试使用is_eliminated
+            if 'is_exited' not in data.columns and 'is_eliminated' in data.columns:
+                data['is_exited'] = data['is_eliminated']
+        else:
+            data = self.df.copy()
+            if 'is_exited' not in data.columns and 'is_eliminated' in data.columns:
+                data['is_exited'] = data['is_eliminated']
+
+        # 设置专业样式
+        plt.style.use('seaborn-v0_8-whitegrid')
+        fig, ax = plt.subplots(figsize=(18, 10))
+
+        # 定义颜色方案
+        color_rank_system = '#E8F4F8'  # 浅蓝色 - Rank System
+        color_percentage_system = '#FFF4E6'  # 浅橙色 - Percentage System
+        color_elimination = '#FF6B6B'  # 红色 - 正常淘汰
+        color_no_elimination = '#95E1D3'  # 青色 - 无淘汰周
+        color_text = '#2C3E50'  # 深灰色 - 文字
+
+        # 第一部分：背景分区（评分系统）
+        ax.axvspan(0.5, 2.5, facecolor=color_rank_system, alpha=0.3, zorder=0)
+        ax.axvspan(2.5, 27.5, facecolor=color_percentage_system, alpha=0.3, zorder=0)
+        ax.axvspan(27.5, 34.5, facecolor=color_rank_system, alpha=0.3, zorder=0)
+
+        # 添加系统标注
+        ax.text(1.5, ax.get_ylim()[1] * 0.95, 'Rank\nSystem',
+                ha='center', va='top', fontsize=14, fontweight='bold',
+                color=color_text, bbox=dict(boxstyle='round,pad=0.5',
+                facecolor='white', edgecolor=color_text, alpha=0.8))
+        ax.text(15, ax.get_ylim()[1] * 0.95, 'Percentage System',
+                ha='center', va='top', fontsize=14, fontweight='bold',
+                color=color_text, bbox=dict(boxstyle='round,pad=0.5',
+                facecolor='white', edgecolor=color_text, alpha=0.8))
+        ax.text(30.5, ax.get_ylim()[1] * 0.95, 'Rank\nSystem',
+                ha='center', va='top', fontsize=14, fontweight='bold',
+                color=color_text, bbox=dict(boxstyle='round,pad=0.5',
+                facecolor='white', edgecolor=color_text, alpha=0.8))
+
+        print("Background zones created successfully")
+
+        # 第二部分：计算每个赛季的淘汰数据
+        elimination_data = []
+        finalist_data = []
+
+        for season in range(1, 35):
+            season_data = data[data['season'] == season]
+            if len(season_data) == 0:
+                continue
+
+            # 按周次分组统计淘汰人数
+            weekly_exits = season_data.groupby('week')['is_exited'].sum().to_dict()
+            max_week = season_data['week'].max()
+
+            # 统计决赛人数（最后一周的参赛人数）
+            final_week_data = season_data[season_data['week'] == max_week]
+            n_finalists = len(final_week_data)
+            finalist_data.append({'season': season, 'n_finalists': n_finalists})
+
+            # 记录每周的淘汰情况
+            for week in range(1, int(max_week) + 1):
+                n_exits = weekly_exits.get(week, 0)
+                elimination_data.append({
+                    'season': season,
+                    'week': week,
+                    'n_exits': n_exits,
+                    'has_elimination': n_exits > 0
+                })
+
+        elim_df = pd.DataFrame(elimination_data)
+        finalist_df = pd.DataFrame(finalist_data)
+
+        print(f"Processed {len(elim_df)} week records across {len(finalist_df)} seasons")
+
+        # 第三部分：绘制淘汰事件标记
+        # 按赛季汇总：每个赛季有多少周有淘汰，多少周无淘汰
+        season_summary = elim_df.groupby('season').agg({
+            'has_elimination': 'sum',  # 有淘汰的周数
+            'week': 'count'  # 总周数
+        }).reset_index()
+        season_summary.columns = ['season', 'weeks_with_elimination', 'total_weeks']
+        season_summary['weeks_no_elimination'] = season_summary['total_weeks'] - season_summary['weeks_with_elimination']
+
+        # 绘制堆叠柱状图
+        x_positions = season_summary['season'].values
+        y_elimination = season_summary['weeks_with_elimination'].values
+        y_no_elimination = season_summary['weeks_no_elimination'].values
+
+        # 淘汰周（底部）
+        bars1 = ax.bar(x_positions, y_elimination, width=0.7,
+                       color=color_elimination, alpha=0.8, label='Weeks with Elimination',
+                       edgecolor='white', linewidth=1.5, zorder=3)
+
+        # 无淘汰周（顶部）
+        bars2 = ax.bar(x_positions, y_no_elimination, width=0.7,
+                       bottom=y_elimination, color=color_no_elimination, alpha=0.8,
+                       label='Weeks without Elimination', edgecolor='white',
+                       linewidth=1.5, zorder=3)
+
+        print("Bar charts plotted successfully")
+
+        # 第四部分：添加淘汰人数注释
+        # 在每个赛季的柱子上标注总淘汰周数
+        for i, (season, weeks_elim) in enumerate(zip(x_positions, y_elimination)):
+            if weeks_elim > 0:
+                # 在淘汰周柱子的中间位置添加文字
+                y_pos = weeks_elim / 2
+                ax.text(season, y_pos, f'{int(weeks_elim)}',
+                       ha='center', va='center', fontsize=10,
+                       fontweight='bold', color='white', zorder=5)
+
+        print("Annotations added successfully")
+
+        # 第五部分：决赛结构分析
+        # 识别决赛人数变化点
+        finalist_df['n_finalists_prev'] = finalist_df['n_finalists'].shift(1)
+        finalist_df['structure_change'] = (finalist_df['n_finalists'] != finalist_df['n_finalists_prev'])
+
+        # 在图表顶部添加决赛结构标记
+        change_points = finalist_df[finalist_df['structure_change'] == True]
+
+        # 绘制决赛人数趋势线（在柱状图上方）
+        ax2 = ax.twinx()
+        ax2.plot(finalist_df['season'], finalist_df['n_finalists'],
+                color='#8B4513', linewidth=2.5, marker='D', markersize=6,
+                label='Number of Finalists', alpha=0.7, zorder=4)
+        ax2.set_ylabel('Number of Finalists', fontsize=14, fontweight='bold', color='#8B4513')
+        ax2.tick_params(axis='y', labelsize=12, colors='#8B4513')
+        ax2.set_ylim(0, max(finalist_df['n_finalists']) + 2)
+
+        # 标注决赛结构变化点
+        for idx, row in change_points.iterrows():
+            if pd.notna(row['n_finalists_prev']):
+                ax2.annotate(f"{int(row['n_finalists'])} finalists",
+                           xy=(row['season'], row['n_finalists']),
+                           xytext=(row['season'], row['n_finalists'] + 1),
+                           fontsize=9, ha='center', color='#8B4513',
+                           bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                   edgecolor='#8B4513', alpha=0.8),
+                           arrowprops=dict(arrowstyle='->', color='#8B4513', lw=1.5))
+
+        print("Finalist structure analysis completed")
+
+        # 第六部分：最终样式设置
+        # 设置主轴标签和标题
+        ax.set_xlabel('Season', fontsize=16, fontweight='bold')
+        ax.set_ylabel('Number of Weeks', fontsize=16, fontweight='bold')
+        ax.set_title('Comprehensive Overview: Scoring Systems, Elimination Dynamics & Finalist Structure\nAcross 34 Seasons of Dancing with the Stars',
+                    fontsize=18, fontweight='bold', pad=20)
+
+        # 设置X轴刻度
+        ax.set_xticks(range(1, 35))
+        ax.set_xticklabels(range(1, 35), fontsize=12)
+        ax.tick_params(axis='y', labelsize=12)
+
+        # 设置网格
+        ax.grid(True, axis='y', linestyle='--', alpha=0.3, zorder=0)
+        ax.set_axisbelow(True)
+
+        # 移除顶部和右侧边框
+        sns.despine(ax=ax, top=True, right=False)
+
+        # 合并图例
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2,
+                 loc='upper left', fontsize=12, frameon=True,
+                 fancybox=True, shadow=True)
+
+        # 调整布局
+        plt.tight_layout()
+
+        print("Final styling completed")
+
+        # 保存图片
+        if save:
+            out_path = os.path.join(PIC_ROOT, 'comprehensive_season_overview.png')
+            plt.savefig(out_path, dpi=300, bbox_inches='tight')
+            print(f"Comprehensive overview saved to: {out_path}")
+        else:
+            plt.show()
+
+        plt.close()
+        print("=" * 60)
+        print("Comprehensive Season Overview Visualization Completed!")
+        print("=" * 60)
+
 
 
 class FanPercentEstimator:
@@ -137,9 +338,9 @@ class FanPercentEstimator:
         self.estimation_results = None
 
     def preprocess_data(self):
-        """数据预处理：提取每周的评委分和淘汰信息"""
+        """数据预处理：提取每周的评委分、淘汰信息和排名"""
         print("=" * 60)
-        print("Step 1: Data Preprocessing (Enhanced)")
+        print("Step 1: Data Preprocessing (Enhanced with Placement)")
         print("=" * 60)
 
         # 存储每周每个选手的数据
@@ -151,13 +352,22 @@ class FanPercentEstimator:
             season = row['season']
             results = row['results']
 
-            # 确定该选手被淘汰的周次和最终排名
-            eliminated_week = None
+            # 获取placement并转换为数值
+            placement = None
+            if 'placement' in self.df.columns and pd.notna(row['placement']):
+                try:
+                    placement = float(row['placement'])
+                except:
+                    placement = None
+
+            # 确定该选手的退出周次和最终排名
+            exit_week = None
             final_rank = None
 
             if isinstance(results, str):
                 if 'Eliminated Week' in results:
-                    eliminated_week = int(results.split('Week ')[-1])
+                    # 正常淘汰：从results解析
+                    exit_week = int(results.split('Week ')[-1])
                 elif '1st Place' in results:
                     final_rank = 1
                 elif '2nd Place' in results:
@@ -167,8 +377,20 @@ class FanPercentEstimator:
                 elif '4th Place' in results:
                     final_rank = 4
                 elif results == 'Withdrew':
-                    # 退出的选手需要特殊处理
-                    continue
+                    # 退出选手：需要找到第一个分数为0或NaN的周次
+                    for week in range(1, 12):
+                        judge_scores = []
+                        for judge_num in range(1, 5):
+                            col_name = f'week{week}_judge{judge_num}_score'
+                            if col_name in self.df.columns:
+                                score = row[col_name]
+                                if pd.notna(score) and score != 0:
+                                    judge_scores.append(float(score))
+
+                        # 如果该周没有有效分数，说明已退出
+                        if len(judge_scores) == 0 and week > 1:
+                            exit_week = week - 1  # 上一周是最后参赛周
+                            break
 
             # 遍历每一周
             for week in range(1, 12):  # 最多11周
@@ -185,18 +407,20 @@ class FanPercentEstimator:
                 if len(judge_scores) > 0:
                     avg_judge_score = np.mean(judge_scores)
 
-                    # 判断该选手在该周是否被淘汰
-                    is_eliminated = (eliminated_week == week)
+                    # 判断该选手在该周是否退出
+                    is_exited = (exit_week == week)
 
                     # 判断该选手在该周是否还在比赛中
-                    if eliminated_week is None or week <= eliminated_week:
+                    if exit_week is None or week <= exit_week:
                         weekly_data.append({
                             'celebrity': celebrity,
                             'season': season,
                             'week': week,
                             'judge_score': avg_judge_score,
-                            'is_eliminated': is_eliminated,
+                            'is_exited': is_exited,
+                            'exit_week': exit_week,
                             'final_rank': final_rank,
+                            'placement': placement,
                             'results': results
                         })
 
@@ -205,10 +429,19 @@ class FanPercentEstimator:
         # 识别每个赛季的决赛周次
         self.finals_week = self.processed_data.groupby('season')['week'].max().to_dict()
 
+        # 为决赛选手设置exit_week
+        for season in self.finals_week:
+            finals_week = self.finals_week[season]
+            mask = (self.processed_data['season'] == season) & \
+                   (self.processed_data['final_rank'].notna()) & \
+                   (self.processed_data['exit_week'].isna())
+            self.processed_data.loc[mask, 'exit_week'] = finals_week
+
         print(f"Processing completed: {len(self.processed_data)} weekly records")
         print(f"Seasons: {self.processed_data['season'].nunique()}")
         print(f"Celebrities: {self.processed_data['celebrity'].nunique()}")
         print(f"Finals identified for {len(self.finals_week)} seasons")
+        print(f"Withdrew contestants handled: {(self.processed_data['results'] == 'Withdrew').sum()}")
         print("\nFirst 5 records:")
         print(self.processed_data.head())
 
@@ -242,17 +475,22 @@ class FanPercentEstimator:
         ranks[temp] = np.arange(1, len(percent_array) + 1)
         return ranks
 
-    def check_percentage_constraints(self, judge_percent, fan_percent, week_data, is_finals):
+    def check_percentage_constraints(self, judge_percent, fan_percent, week_data, current_week, is_finals):
         """
-        检查百分比制约束 (Seasons 3-27)
+        检查百分比制约束 (Seasons 3-27) - 基于Placement排序
 
-        约束1 (常规周): 被淘汰选手的 Total % 必须最低
-        约束2 (决赛周): Total % 必须符合 final_rank 顺序
+        约束逻辑：
+        1. 识别本周退出者 (exit_week == current_week)
+        2. 识别幸存者 (exit_week > current_week 或 exit_week is None)
+        3. 全局约束：所有幸存者的 Total % 必须 > 所有退出者的 Total %
+        4. 退出者内部约束：Total % 必须符合 placement 顺序（placement小的Total%应该更高）
+        5. 决赛周特殊处理：按 final_rank 排序
 
         参数：
         - judge_percent: 评委百分比数组
         - fan_percent: 观众百分比数组
         - week_data: 该周数据
+        - current_week: 当前周次
         - is_finals: 是否为决赛周
 
         返回：
@@ -261,16 +499,13 @@ class FanPercentEstimator:
         total_percent = judge_percent + fan_percent
 
         if is_finals:
-            # 决赛周：检查 final_rank 约束
-            # 获取有排名的选手
+            # 决赛周：按 final_rank 排序
             ranked_contestants = week_data[week_data['final_rank'].notna()].copy()
             if len(ranked_contestants) > 0:
-                # 按 final_rank 排序
                 ranked_contestants = ranked_contestants.sort_values('final_rank')
                 indices = ranked_contestants.index.tolist()
 
                 # 检查 Total % 是否按 final_rank 递减
-                # Rank 1 应该有最高的 Total %
                 for i in range(len(indices) - 1):
                     idx_current = week_data.index.get_loc(indices[i])
                     idx_next = week_data.index.get_loc(indices[i + 1])
@@ -279,30 +514,68 @@ class FanPercentEstimator:
                         return False
                 return True
             else:
-                # 没有排名信息，接受样本
                 return True
         else:
-            # 常规周：检查淘汰约束
-            eliminated_idx = week_data['is_eliminated'].values.nonzero()[0]
-            if len(eliminated_idx) > 0:
-                eliminated_total = total_percent[eliminated_idx[0]]
-                # 被淘汰选手的总分必须是最低的（或并列最低）
-                return eliminated_total <= np.min(total_percent)
-            else:
-                # 该周没有人被淘汰
+            # 常规周：基于 placement 的约束
+            # 识别本周退出者和幸存者
+            exited_mask = week_data['is_exited'] == True
+            survivor_mask = week_data['is_exited'] == False
+
+            exited_indices = week_data[exited_mask].index.tolist()
+            survivor_indices = week_data[survivor_mask].index.tolist()
+
+            if len(exited_indices) == 0:
+                # 没有人退出，接受样本
                 return True
 
-    def check_rank_constraints(self, judge_percent, fan_percent, week_data, is_finals):
-        """
-        检查排名制约束 (Seasons 1-2, 28-34)
+            # 约束1：所有幸存者的 Total % 必须 > 所有退出者的 Total %
+            if len(survivor_indices) > 0:
+                survivor_totals = [total_percent[week_data.index.get_loc(idx)] for idx in survivor_indices]
+                exited_totals = [total_percent[week_data.index.get_loc(idx)] for idx in exited_indices]
 
-        约束1 (常规周): 被淘汰选手的 Total Rank Sum 必须最高（最差）
-        约束2 (决赛周): Total Rank Sum 必须符合 final_rank 顺序
+                min_survivor_total = min(survivor_totals)
+                max_exited_total = max(exited_totals)
+
+                if min_survivor_total <= max_exited_total:
+                    return False
+
+            # 约束2：退出者内部按 placement 排序
+            if len(exited_indices) > 1:
+                exited_data = week_data.loc[exited_indices].copy()
+                # 过滤掉没有placement的数据
+                exited_with_placement = exited_data[exited_data['placement'].notna()]
+
+                if len(exited_with_placement) > 1:
+                    # 按 placement 排序（小的placement应该有更高的Total%）
+                    exited_with_placement = exited_with_placement.sort_values('placement')
+                    sorted_indices = exited_with_placement.index.tolist()
+
+                    for i in range(len(sorted_indices) - 1):
+                        idx_current = week_data.index.get_loc(sorted_indices[i])
+                        idx_next = week_data.index.get_loc(sorted_indices[i + 1])
+
+                        # placement小的应该有更高的Total%
+                        if total_percent[idx_current] <= total_percent[idx_next]:
+                            return False
+
+            return True
+
+    def check_rank_constraints(self, judge_percent, fan_percent, week_data, current_week, is_finals):
+        """
+        检查排名制约束 (Seasons 1-2, 28-34) - 基于Placement排序
+
+        约束逻辑：
+        1. 识别本周退出者 (exit_week == current_week)
+        2. 识别幸存者 (exit_week > current_week 或 exit_week is None)
+        3. 全局约束：所有幸存者的 Total Rank Sum 必须 < 所有退出者的 Total Rank Sum
+        4. 退出者内部约束：Total Rank Sum 必须符合 placement 顺序（placement小的Rank Sum应该更低）
+        5. 决赛周特殊处理：按 final_rank 排序
 
         参数：
         - judge_percent: 评委百分比数组
         - fan_percent: 观众百分比数组
         - week_data: 该周数据
+        - current_week: 当前周次
         - is_finals: 是否为决赛周
 
         返回：
@@ -314,14 +587,13 @@ class FanPercentEstimator:
         total_rank_sum = judge_rank + fan_rank
 
         if is_finals:
-            # 决赛周：检查 final_rank 约束
+            # 决赛周：按 final_rank 排序
             ranked_contestants = week_data[week_data['final_rank'].notna()].copy()
             if len(ranked_contestants) > 0:
                 ranked_contestants = ranked_contestants.sort_values('final_rank')
                 indices = ranked_contestants.index.tolist()
 
                 # 检查 Total Rank Sum 是否按 final_rank 递增
-                # Rank 1 应该有最低的 Total Rank Sum
                 for i in range(len(indices) - 1):
                     idx_current = week_data.index.get_loc(indices[i])
                     idx_next = week_data.index.get_loc(indices[i + 1])
@@ -332,18 +604,53 @@ class FanPercentEstimator:
             else:
                 return True
         else:
-            # 常规周：检查淘汰约束
-            eliminated_idx = week_data['is_eliminated'].values.nonzero()[0]
-            if len(eliminated_idx) > 0:
-                eliminated_rank_sum = total_rank_sum[eliminated_idx[0]]
-                # 被淘汰选手的排名和必须是最高的（最差）
-                return eliminated_rank_sum >= np.max(total_rank_sum)
-            else:
+            # 常规周：基于 placement 的约束
+            # 识别本周退出者和幸存者
+            exited_mask = week_data['is_exited'] == True
+            survivor_mask = week_data['is_exited'] == False
+
+            exited_indices = week_data[exited_mask].index.tolist()
+            survivor_indices = week_data[survivor_mask].index.tolist()
+
+            if len(exited_indices) == 0:
+                # 没有人退出，接受样本
                 return True
+
+            # 约束1：所有幸存者的 Total Rank Sum 必须 < 所有退出者的 Total Rank Sum
+            if len(survivor_indices) > 0:
+                survivor_rank_sums = [total_rank_sum[week_data.index.get_loc(idx)] for idx in survivor_indices]
+                exited_rank_sums = [total_rank_sum[week_data.index.get_loc(idx)] for idx in exited_indices]
+
+                max_survivor_rank = max(survivor_rank_sums)
+                min_exited_rank = min(exited_rank_sums)
+
+                if max_survivor_rank >= min_exited_rank:
+                    return False
+
+            # 约束2：退出者内部按 placement 排序
+            if len(exited_indices) > 1:
+                exited_data = week_data.loc[exited_indices].copy()
+                # 过滤掉没有placement的数据
+                exited_with_placement = exited_data[exited_data['placement'].notna()]
+
+                if len(exited_with_placement) > 1:
+                    # 按 placement 排序（小的placement应该有更低的Rank Sum）
+                    exited_with_placement = exited_with_placement.sort_values('placement')
+                    sorted_indices = exited_with_placement.index.tolist()
+
+                    for i in range(len(sorted_indices) - 1):
+                        idx_current = week_data.index.get_loc(sorted_indices[i])
+                        idx_next = week_data.index.get_loc(sorted_indices[i + 1])
+
+                        # placement小的应该有更低的Rank Sum（更好）
+                        if total_rank_sum[idx_current] >= total_rank_sum[idx_next]:
+                            return False
+
+            return True
 
     def monte_carlo_sampling(self, week_data, season, week, n_samples=10000):
         """
-        蒙特卡洛采样估计观众分 (支持两种评分系统)
+        蒙特卡洛采样估计观众分 (支持两种评分系统 + Placement约束)
 
         评分系统：
         - Seasons 3-27: 百分比制 (Judge % + Fan % = Total %)
@@ -351,8 +658,9 @@ class FanPercentEstimator:
 
         约束条件：
         1. ∑FanPercent = 1.0
-        2. 常规周：被淘汰选手必须得分/排名最差
-        3. 决赛周：最终排名必须符合 final_rank 顺序
+        2. 幸存者 vs 退出者：幸存者的得分/排名必须优于所有退出者
+        3. 退出者内部：按 placement 排序
+        4. 决赛周：按 final_rank 排序
 
         参数：
         - week_data: 某一周的选手数据
@@ -387,12 +695,12 @@ class FanPercentEstimator:
             if use_percentage_system:
                 # Seasons 3-27: 百分比制
                 is_valid = self.check_percentage_constraints(
-                    judge_percent, fan_percent, week_data, is_finals
+                    judge_percent, fan_percent, week_data, week, is_finals
                 )
             else:
                 # Seasons 1-2, 28-34: 排名制
                 is_valid = self.check_rank_constraints(
-                    judge_percent, fan_percent, week_data, is_finals
+                    judge_percent, fan_percent, week_data, week, is_finals
                 )
 
             if is_valid:
@@ -401,10 +709,10 @@ class FanPercentEstimator:
         return np.array(valid_samples)
 
     def estimate_fan_percent(self, n_samples=10000):
-        """估计所有周次的观众分 (支持两种评分系统)"""
+        """估计所有周次的观众分 (支持两种评分系统 + Placement约束)"""
         print("\n" + "=" * 60)
         print("Step 2: Monte Carlo Sampling for Fan Percent Estimation")
-        print("Step 2: (Enhanced with Dual Scoring Systems)")
+        print("Step 2: (Enhanced with Dual Scoring Systems + Placement)")
         print("=" * 60)
 
         if self.processed_data is None:
@@ -451,8 +759,10 @@ class FanPercentEstimator:
                     'judge_percent': self.normalize_judge_scores(week_data).iloc[j],
                     'fan_percent_mean': fan_mean[j],
                     'fan_percent_std': fan_std[j],
-                    'is_eliminated': row['is_eliminated'],
+                    'is_exited': row['is_exited'],
+                    'exit_week': row['exit_week'],
                     'final_rank': row['final_rank'],
+                    'placement': row['placement'],
                     'n_valid_samples': len(samples)
                 })
 
@@ -507,7 +817,7 @@ class FanPercentEstimator:
     def calculate_upset_rate(self):
         """
         计算"爆冷率"
-        定义：评委分最低者与实际淘汰者不一致的比例
+        定义：评委分最低者与实际退出者不一致的比例
         """
         print("\n" + "=" * 60)
         print("Step 3: Calculate Upset Rate")
@@ -517,36 +827,36 @@ class FanPercentEstimator:
             raise ValueError("Please run estimate_fan_percent() first")
 
         upset_count = 0
-        total_elimination_weeks = 0
+        total_exit_weeks = 0
         upset_details = []
 
         # 按赛季和周次分组
         grouped = self.estimation_results.groupby(['season', 'week'])
 
         for (season, week), week_data in grouped:
-            # 检查该周是否有人被淘汰
-            if week_data['is_eliminated'].any():
-                total_elimination_weeks += 1
+            # 检查该周是否有人退出
+            if week_data['is_exited'].any():
+                total_exit_weeks += 1
 
                 # 找出评委分最低的选手
                 min_judge_idx = week_data['judge_percent'].idxmin()
                 judge_lowest = week_data.loc[min_judge_idx, 'celebrity']
 
-                # 找出实际被淘汰的选手
-                eliminated_idx = week_data[week_data['is_eliminated']].index[0]
-                actual_eliminated = week_data.loc[eliminated_idx, 'celebrity']
+                # 找出实际退出的选手
+                exited_idx = week_data[week_data['is_exited']].index[0]
+                actual_exited = week_data.loc[exited_idx, 'celebrity']
 
                 # 如果不一致，则为"爆冷"
-                if judge_lowest != actual_eliminated:
+                if judge_lowest != actual_exited:
                     upset_count += 1
                     upset_details.append({
                         'season': season,
                         'week': week,
                         'judge_lowest': judge_lowest,
-                        'actual_eliminated': actual_eliminated
+                        'actual_exited': actual_exited
                     })
 
-        upset_rate = upset_count / total_elimination_weeks if total_elimination_weeks > 0 else 0
+        upset_rate = upset_count / total_exit_weeks if total_exit_weeks > 0 else 0
 
         # 将详细信息保存到文件
         if len(upset_details) > 0:
@@ -554,7 +864,7 @@ class FanPercentEstimator:
             upset_df.to_csv('upset_details.csv', index=False, encoding='utf-8-sig')
             print(f"Upset details saved to: upset_details.csv")
 
-        print(f"\nTotal elimination weeks: {total_elimination_weeks}")
+        print(f"\nTotal exit weeks: {total_exit_weeks}")
         print(f"Upset count: {upset_count}")
         print(f"Upset rate: {upset_rate:.2%}")
 
@@ -648,11 +958,14 @@ def main():
     estimator.save_results('fan_percent_estimation_results.csv')
 
     # 步骤5：绘制趋势图（以第1季为例）
-    estimator.plot_fan_support_trend(season=1, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season1.png'))
-    estimator.plot_fan_support_trend(season=2, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season2.png'))
-    estimator.plot_fan_support_trend(season=3, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season3.png'))
-    estimator.plot_fan_support_trend(season=28, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season28.png'))
-    estimator.plot_fan_support_trend(season=30, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season30.png'))
+    # estimator.plot_fan_support_trend(season=1, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season1.png'))
+    # estimator.plot_fan_support_trend(season=2, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season2.png'))
+    # estimator.plot_fan_support_trend(season=3, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season3.png'))
+    # estimator.plot_fan_support_trend(season=28, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season28.png'))
+    # estimator.plot_fan_support_trend(season=30, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season30.png'))
+    # estimator.plot_fan_support_trend(season=21, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season21.png'))#withdrew
+    # estimator.plot_fan_support_trend(season=18, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season18.png'))#withdrew
+    # estimator.plot_fan_support_trend(season=15, output_path=os.path.join(PIC_ROOT, 'fan_support_trend_season15.png'))#全明星阵容
 
     #导师相关指标分析
    
@@ -664,6 +977,13 @@ def main():
     analyzer.plot_judge_influence_trend(save=True)  # 纵向：导师话语权趋势
     analyzer.plot_season_week_heatmap(save=True)    # 纵向：淘汰命中分析
     analyzer.plot_celebrity_score_heatmap(27, save=True) # 横向：第27季选手表现对比
+
+      # Call the new comprehensive visualization
+    analyzer.plot_comprehensive_season_overview(
+        estimation_results=estimator.estimation_results,
+        save=True
+    )
+
     print("\n" + "=" * 60)
     print("All tasks completed!")
     print("=" * 60)
