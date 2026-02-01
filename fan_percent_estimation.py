@@ -152,35 +152,21 @@ class DWTSAdvAnalysis:
         plt.style.use('seaborn-v0_8-whitegrid')
         fig, ax = plt.subplots(figsize=(18, 10))
 
-        # 定义颜色方案
-        color_rank_system = '#E8F4F8'  # 浅蓝色 - Rank System
-        color_percentage_system = '#FFF4E6'  # 浅橙色 - Percentage System
-        color_elimination = '#FF6B6B'  # 红色 - 正常淘汰
-        color_no_elimination = '#95E1D3'  # 青色 - 无淘汰周
-        color_text = '#2C3E50'  # 深灰色 - 文字
+        # 定义颜色方案（增强区分度和美观）
+        color_rank_system = '#A2C6F2'  # 更深蓝色 - Rank System
+        color_percentage_system = '#FFD59A'  # 更深橙色 - Percentage System
+        color_elimination = '#FF4C4C'  # 更鲜明红色 - 正常淘汰
+        color_no_elimination = '#2EC4B6'  # 更鲜明青色 - 无淘汰周
+        color_text = '#1A2327'  # 更深灰色 - 文字
 
-        # 第一部分：背景分区（评分系统）
-        ax.axvspan(0.5, 2.5, facecolor=color_rank_system, alpha=0.3, zorder=0)
-        ax.axvspan(2.5, 27.5, facecolor=color_percentage_system, alpha=0.3, zorder=0)
-        ax.axvspan(27.5, 34.5, facecolor=color_rank_system, alpha=0.3, zorder=0)
+        # 背景分区（评分系统，增强区分度）
+        ax.axvspan(0.5, 2.5, facecolor=color_rank_system, alpha=0.55, zorder=0)
+        ax.axvspan(2.5, 27.5, facecolor=color_percentage_system, alpha=0.55, zorder=0)
+        ax.axvspan(27.5, 34.5, facecolor=color_rank_system, alpha=0.55, zorder=0)
 
-        # 添加系统标注
-        ax.text(1.5, ax.get_ylim()[1] * 0.95, 'Rank\nSystem',
-                ha='center', va='top', fontsize=14, fontweight='bold',
-                color=color_text, bbox=dict(boxstyle='round,pad=0.5',
-                facecolor='white', edgecolor=color_text, alpha=0.8))
-        ax.text(15, ax.get_ylim()[1] * 0.95, 'Percentage System',
-                ha='center', va='top', fontsize=14, fontweight='bold',
-                color=color_text, bbox=dict(boxstyle='round,pad=0.5',
-                facecolor='white', edgecolor=color_text, alpha=0.8))
-        ax.text(30.5, ax.get_ylim()[1] * 0.95, 'Rank\nSystem',
-                ha='center', va='top', fontsize=14, fontweight='bold',
-                color=color_text, bbox=dict(boxstyle='round,pad=0.5',
-                facecolor='white', edgecolor=color_text, alpha=0.8))
+        print("Background zones created")
 
-        print("Background zones created successfully")
-
-        # 第二部分：计算每个赛季的淘汰数据
+        # 计算每个赛季的淘汰数据
         elimination_data = []
         finalist_data = []
 
@@ -213,7 +199,6 @@ class DWTSAdvAnalysis:
 
         print(f"Processed {len(elim_df)} week records across {len(finalist_df)} seasons")
 
-        # 第三部分：绘制淘汰事件标记
         # 按赛季汇总：每个赛季有多少周有淘汰，多少周无淘汰
         season_summary = elim_df.groupby('season').agg({
             'has_elimination': 'sum',  # 有淘汰的周数
@@ -222,42 +207,55 @@ class DWTSAdvAnalysis:
         season_summary.columns = ['season', 'weeks_with_elimination', 'total_weeks']
         season_summary['weeks_no_elimination'] = season_summary['total_weeks'] - season_summary['weeks_with_elimination']
 
+
         # 绘制堆叠柱状图
         x_positions = season_summary['season'].values
         y_elimination = season_summary['weeks_with_elimination'].values
         y_no_elimination = season_summary['weeks_no_elimination'].values
 
+
+        # 决赛灰色堆叠逻辑（每季最后一周都为决赛）
+        color_final = '#B0B0B0'  # 灰色
+        y_final = np.ones_like(y_no_elimination)
+        y_no_elimination_adj = np.maximum(y_no_elimination - 1, 0)
+
         # 淘汰周（底部）
         bars1 = ax.bar(x_positions, y_elimination, width=0.7,
                        color=color_elimination, alpha=0.8, label='Weeks with Elimination',
-                       edgecolor='white', linewidth=1.5, zorder=3)
+                       edgecolor='white', linewidth=1.5, zorder=2)
 
-        # 无淘汰周（顶部）
-        bars2 = ax.bar(x_positions, y_no_elimination, width=0.7,
+        # 非决赛无淘汰周（中间）
+        bars2 = ax.bar(x_positions, y_no_elimination_adj, width=0.7,
                        bottom=y_elimination, color=color_no_elimination, alpha=0.8,
                        label='Weeks without Elimination', edgecolor='white',
-                       linewidth=1.5, zorder=3)
+                       linewidth=1.5, zorder=2)
 
-        print("Bar charts plotted successfully")
+        # 决赛周（顶端灰色，仅1格）
+        bars3 = ax.bar(x_positions, y_final, width=0.7,
+                   bottom=y_elimination + y_no_elimination_adj, color=color_final, alpha=0.95,
+                   label='Final Week', edgecolor='white',
+                   linewidth=1.5, zorder=2)
 
-        # 第四部分：添加淘汰人数注释
-        # 在每个赛季的柱子上标注总淘汰周数
+        # 设置y轴上限，顶部留空隙
+        max_height = np.max(y_elimination + y_no_elimination_adj + y_final)
+        ax.set_ylim(0, max_height * 1.10)
+
+        print("Bar charts plotted")
+
+        # 添加淘汰人数注释
         for i, (season, weeks_elim) in enumerate(zip(x_positions, y_elimination)):
             if weeks_elim > 0:
-                # 在淘汰周柱子的中间位置添加文字
                 y_pos = weeks_elim / 2
                 ax.text(season, y_pos, f'{int(weeks_elim)}',
                        ha='center', va='center', fontsize=10,
                        fontweight='bold', color='white', zorder=5)
 
-        print("Annotations added successfully")
+        print("Annotations added")
 
-        # 第五部分：决赛结构分析
-        # 识别决赛人数变化点
+        # 决赛结构分析
         finalist_df['n_finalists_prev'] = finalist_df['n_finalists'].shift(1)
         finalist_df['structure_change'] = (finalist_df['n_finalists'] != finalist_df['n_finalists_prev'])
 
-        # 在图表顶部添加决赛结构标记
         change_points = finalist_df[finalist_df['structure_change'] == True]
 
         # 绘制决赛人数趋势线（在柱状图上方）
@@ -282,8 +280,7 @@ class DWTSAdvAnalysis:
 
         print("Finalist structure analysis completed")
 
-        # 第六部分：最终样式设置
-        # 设置主轴标签和标题
+        # 最终样式设置
         ax.set_xlabel('Season', fontsize=16, fontweight='bold')
         ax.set_ylabel('Number of Weeks', fontsize=16, fontweight='bold')
         ax.set_title('Comprehensive Overview: Scoring Systems, Elimination Dynamics & Finalist Structure\nAcross 34 Seasons of Dancing with the Stars',
@@ -295,7 +292,7 @@ class DWTSAdvAnalysis:
         ax.tick_params(axis='y', labelsize=12)
 
         # 设置网格
-        ax.grid(True, axis='y', linestyle='--', alpha=0.3, zorder=0)
+        ax.grid(True, axis='y', linestyle='--', alpha=0.3, zorder=1)
         ax.set_axisbelow(True)
 
         # 移除顶部和右侧边框
@@ -308,16 +305,39 @@ class DWTSAdvAnalysis:
                  loc='upper left', fontsize=12, frameon=True,
                  fancybox=True, shadow=True)
 
+        # 添加系统标注（在所有绘图完成后）
+        y_max = ax.get_ylim()[1]
+        text_y_pos = y_max * 0.88  # 下移系统标注
+
+        ax.text(1.5, text_y_pos, 'Rank\nSystem',
+            ha='center', va='top', fontsize=15, fontweight='bold',
+            color=color_text, zorder=10,
+            bbox=dict(boxstyle='round,pad=0.5',
+                 facecolor='white', edgecolor=color_rank_system,
+                 linewidth=2, alpha=0.95))
+        ax.text(15, text_y_pos, 'Percentage System',
+            ha='center', va='top', fontsize=15, fontweight='bold',
+            color=color_text, zorder=10,
+            bbox=dict(boxstyle='round,pad=0.5',
+                 facecolor='white', edgecolor=color_percentage_system,
+                 linewidth=2, alpha=0.95))
+        ax.text(30.5, text_y_pos, 'Rank\nSystem',
+            ha='center', va='top', fontsize=15, fontweight='bold',
+            color=color_text, zorder=10,
+            bbox=dict(boxstyle='round,pad=0.5',
+                 facecolor='white', edgecolor=color_rank_system,
+                 linewidth=2, alpha=0.95))
+
+        print("System labels added")
+
         # 调整布局
         plt.tight_layout()
-
-        print("Final styling completed")
 
         # 保存图片
         if save:
             out_path = os.path.join(PIC_ROOT, 'comprehensive_season_overview.png')
             plt.savefig(out_path, dpi=300, bbox_inches='tight')
-            print(f"Comprehensive overview saved to: {out_path}")
+            print(f"Plot saved to: {out_path}")
         else:
             plt.show()
 
@@ -325,6 +345,10 @@ class DWTSAdvAnalysis:
         print("=" * 60)
         print("Comprehensive Season Overview Visualization Completed!")
         print("=" * 60)
+
+
+
+
 
 
 
@@ -475,92 +499,116 @@ class FanPercentEstimator:
         ranks[temp] = np.arange(1, len(percent_array) + 1)
         return ranks
 
-    def check_percentage_constraints(self, judge_percent, fan_percent, week_data, current_week, is_finals):
+    def check_percentage_constraints_fast(self, judge_percent, fan_percent,
+                                          survivor_idx, exited_idx,
+                                          finals_rank_idx, exited_placement_idx):
         """
-        检查百分比制约束 (Seasons 3-27) - 基于Placement排序
-
-        约束逻辑：
-        1. 识别本周退出者 (exit_week == current_week)
-        2. 识别幸存者 (exit_week > current_week 或 exit_week is None)
-        3. 全局约束：所有幸存者的 Total % 必须 > 所有退出者的 Total %
-        4. 退出者内部约束：Total % 必须符合 placement 顺序（placement小的Total%应该更高）
-        5. 决赛周特殊处理：按 final_rank 排序
+        检查百分比制约束 (Seasons 3-27) - 优化版本（纯NumPy）
 
         参数：
-        - judge_percent: 评委百分比数组
-        - fan_percent: 观众百分比数组
-        - week_data: 该周数据
-        - current_week: 当前周次
-        - is_finals: 是否为决赛周
+        - judge_percent: 评委百分比数组 (NumPy)
+        - fan_percent: 观众百分比数组 (NumPy)
+        - survivor_idx: 幸存者索引数组 (NumPy)
+        - exited_idx: 退出者索引数组 (NumPy)
+        - finals_rank_idx: 决赛排名索引数组 (NumPy, 按final_rank排序) 或 None
+        - exited_placement_idx: 退出者按placement排序的索引数组 (NumPy) 或 None
 
         返回：
         - True/False
         """
         total_percent = judge_percent + fan_percent
 
-        if is_finals:
-            # 决赛周：按 final_rank 排序
-            ranked_contestants = week_data[week_data['final_rank'].notna()].copy()
-            if len(ranked_contestants) > 0:
-                ranked_contestants = ranked_contestants.sort_values('final_rank')
-                indices = ranked_contestants.index.tolist()
-
-                # 检查 Total % 是否按 final_rank 递减
-                for i in range(len(indices) - 1):
-                    idx_current = week_data.index.get_loc(indices[i])
-                    idx_next = week_data.index.get_loc(indices[i + 1])
-
-                    if total_percent[idx_current] <= total_percent[idx_next]:
-                        return False
-                return True
-            else:
-                return True
-        else:
-            # 常规周：基于 placement 的约束
-            # 识别本周退出者和幸存者
-            exited_mask = week_data['is_exited'] == True
-            survivor_mask = week_data['is_exited'] == False
-
-            exited_indices = week_data[exited_mask].index.tolist()
-            survivor_indices = week_data[survivor_mask].index.tolist()
-
-            if len(exited_indices) == 0:
-                # 没有人退出，接受样本
-                return True
-
-            # 约束1：所有幸存者的 Total % 必须 > 所有退出者的 Total %
-            if len(survivor_indices) > 0:
-                survivor_totals = [total_percent[week_data.index.get_loc(idx)] for idx in survivor_indices]
-                exited_totals = [total_percent[week_data.index.get_loc(idx)] for idx in exited_indices]
-
-                min_survivor_total = min(survivor_totals)
-                max_exited_total = max(exited_totals)
-
-                if min_survivor_total <= max_exited_total:
+        # 决赛周逻辑
+        if finals_rank_idx is not None and len(finals_rank_idx) > 0:
+            for i in range(len(finals_rank_idx) - 1):
+                if total_percent[finals_rank_idx[i]] <= total_percent[finals_rank_idx[i + 1]]:
                     return False
-
-            # 约束2：退出者内部按 placement 排序
-            if len(exited_indices) > 1:
-                exited_data = week_data.loc[exited_indices].copy()
-                # 过滤掉没有placement的数据
-                exited_with_placement = exited_data[exited_data['placement'].notna()]
-
-                if len(exited_with_placement) > 1:
-                    # 按 placement 排序（小的placement应该有更高的Total%）
-                    exited_with_placement = exited_with_placement.sort_values('placement')
-                    sorted_indices = exited_with_placement.index.tolist()
-
-                    for i in range(len(sorted_indices) - 1):
-                        idx_current = week_data.index.get_loc(sorted_indices[i])
-                        idx_next = week_data.index.get_loc(sorted_indices[i + 1])
-
-                        # placement小的应该有更高的Total%
-                        if total_percent[idx_current] <= total_percent[idx_next]:
-                            return False
-
             return True
 
-    def check_rank_constraints(self, judge_percent, fan_percent, week_data, current_week, is_finals):
+        # 常规周逻辑
+        if len(exited_idx) == 0:
+            return True
+
+        # 约束1：幸存者 vs 退出者
+        if len(survivor_idx) > 0:
+            min_survivor = np.min(total_percent[survivor_idx])
+            max_exited = np.max(total_percent[exited_idx])
+            if min_survivor <= max_exited:
+                return False
+
+        # 约束2：退出者内部按placement排序
+        if exited_placement_idx is not None and len(exited_placement_idx) > 1:
+            for i in range(len(exited_placement_idx) - 1):
+                if total_percent[exited_placement_idx[i]] <= total_percent[exited_placement_idx[i + 1]]:
+                    return False
+
+        return True
+
+    def check_rank_constraints_fast(self, judge_percent, fan_percent,
+                                   survivor_idx, exited_idx,
+                                   finals_rank_idx, exited_placement_idx,
+                                   allow_ties=False, skip_placement=False):
+        """
+        检查排名制约束 (Seasons 1-2, 28-34) - 优化版本（纯NumPy + 容错机制）
+
+        参数：
+        - judge_percent: 评委百分比数组 (NumPy)
+        - fan_percent: 观众百分比数组 (NumPy)
+        - survivor_idx: 幸存者索引数组 (NumPy)
+        - exited_idx: 退出者索引数组 (NumPy)
+        - finals_rank_idx: 决赛排名索引数组 (NumPy, 按final_rank排序) 或 None
+        - exited_placement_idx: 退出者按placement排序的索引数组 (NumPy) 或 None
+        - allow_ties: 是否允许平局（放宽约束为 >= 而非 >）
+        - skip_placement: 是否跳过placement内部约束
+
+        返回：
+        - True/False
+        """
+        # 转换为排名
+        judge_rank = self.convert_percent_to_rank(judge_percent)
+        fan_rank = self.convert_percent_to_rank(fan_percent)
+        total_rank_sum = judge_rank + fan_rank
+
+        # 决赛周逻辑
+        if finals_rank_idx is not None and len(finals_rank_idx) > 0:
+            for i in range(len(finals_rank_idx) - 1):
+                if allow_ties:
+                    if total_rank_sum[finals_rank_idx[i]] > total_rank_sum[finals_rank_idx[i + 1]]:
+                        return False
+                else:
+                    if total_rank_sum[finals_rank_idx[i]] >= total_rank_sum[finals_rank_idx[i + 1]]:
+                        return False
+            return True
+
+        # 常规周逻辑
+        if len(exited_idx) == 0:
+            return True
+
+        # 约束1：幸存者 vs 退出者
+        if len(survivor_idx) > 0:
+            max_survivor = np.max(total_rank_sum[survivor_idx])
+            min_exited = np.min(total_rank_sum[exited_idx])
+
+            if allow_ties:
+                # 放宽约束：允许平局
+                if max_survivor > min_exited:
+                    return False
+            else:
+                # 严格约束：不允许平局
+                if max_survivor >= min_exited:
+                    return False
+
+        # 约束2：退出者内部按placement排序（可选跳过）
+        if not skip_placement and exited_placement_idx is not None and len(exited_placement_idx) > 1:
+            for i in range(len(exited_placement_idx) - 1):
+                if allow_ties:
+                    if total_rank_sum[exited_placement_idx[i]] > total_rank_sum[exited_placement_idx[i + 1]]:
+                        return False
+                else:
+                    if total_rank_sum[exited_placement_idx[i]] >= total_rank_sum[exited_placement_idx[i + 1]]:
+                        return False
+
+        return True
         """
         检查排名制约束 (Seasons 1-2, 28-34) - 基于Placement排序
 
@@ -650,17 +698,11 @@ class FanPercentEstimator:
 
     def monte_carlo_sampling(self, week_data, season, week, n_samples=10000):
         """
-        蒙特卡洛采样估计观众分 (支持两种评分系统 + Placement约束)
+        蒙特卡洛采样估计观众分 (优化版本 - 预计算 + 纯NumPy循环)
 
         评分系统：
         - Seasons 3-27: 百分比制 (Judge % + Fan % = Total %)
         - Seasons 1-2, 28-34: 排名制 (Judge Rank + Fan Rank = Total Rank Sum)
-
-        约束条件：
-        1. ∑FanPercent = 1.0
-        2. 幸存者 vs 退出者：幸存者的得分/排名必须优于所有退出者
-        3. 退出者内部：按 placement 排序
-        4. 决赛周：按 final_rank 排序
 
         参数：
         - week_data: 某一周的选手数据
@@ -673,7 +715,7 @@ class FanPercentEstimator:
         """
         n_contestants = len(week_data)
 
-        # 归一化评委分为百分比
+        # 归一化评委分为百分比（转为NumPy数组）
         judge_percent = self.normalize_judge_scores(week_data).values
 
         # 判断是否为决赛周
@@ -682,38 +724,119 @@ class FanPercentEstimator:
         # 判断使用哪种评分系统
         use_percentage_system = (3 <= season <= 27)
 
-        # 存储有效样本
+        # ========== 预计算阶段（在循环外执行一次）==========
+        # 1. 提取幸存者和退出者索引
+        is_exited_array = week_data['is_exited'].values
+        survivor_idx = np.where(is_exited_array == False)[0]
+        exited_idx = np.where(is_exited_array == True)[0]
+
+        # 2. 决赛排名索引（如果是决赛周）
+        finals_rank_idx = None
+        if is_finals:
+            final_rank_array = week_data['final_rank'].values
+            has_rank = ~np.isnan(final_rank_array)
+            if np.any(has_rank):
+                # 获取有排名的索引，并按final_rank排序
+                ranked_indices = np.where(has_rank)[0]
+                rank_values = final_rank_array[ranked_indices]
+                sort_order = np.argsort(rank_values)
+                finals_rank_idx = ranked_indices[sort_order]
+
+        # 3. 退出者按placement排序的索引（常规周）
+        exited_placement_idx = None
+        if not is_finals and len(exited_idx) > 1:
+            placement_array = week_data['placement'].values
+            exited_placements = placement_array[exited_idx]
+            has_placement = ~np.isnan(exited_placements)
+            if np.sum(has_placement) > 1:
+                # 获取有placement的退出者索引
+                valid_exited = exited_idx[has_placement]
+                placement_values = placement_array[valid_exited]
+                sort_order = np.argsort(placement_values)
+                exited_placement_idx = valid_exited[sort_order]
+
+        # ========== 蒙特卡洛采样循环（纯NumPy操作 + 三级重试机制）==========
         valid_samples = []
 
-        # 蒙特卡洛采样
+        # 尝试1：严格约束
         for _ in range(n_samples):
-            # 使用Dirichlet分布生成满足∑=1约束的观众分
-            # alpha参数控制分布的均匀程度，这里使用1表示均匀先验
             fan_percent = np.random.dirichlet(np.ones(n_contestants))
 
-            # 根据赛季选择约束检查方法
             if use_percentage_system:
-                # Seasons 3-27: 百分比制
-                is_valid = self.check_percentage_constraints(
-                    judge_percent, fan_percent, week_data, week, is_finals
+                is_valid = self.check_percentage_constraints_fast(
+                    judge_percent, fan_percent,
+                    survivor_idx, exited_idx,
+                    finals_rank_idx, exited_placement_idx
                 )
             else:
-                # Seasons 1-2, 28-34: 排名制
-                is_valid = self.check_rank_constraints(
-                    judge_percent, fan_percent, week_data, week, is_finals
+                is_valid = self.check_rank_constraints_fast(
+                    judge_percent, fan_percent,
+                    survivor_idx, exited_idx,
+                    finals_rank_idx, exited_placement_idx,
+                    allow_ties=False, skip_placement=False
                 )
 
             if is_valid:
                 valid_samples.append(fan_percent)
 
+        # 尝试2：如果样本不足，放宽平局约束（仅Rank System）
+        if len(valid_samples) < n_samples * 0.01 and not use_percentage_system:
+            print(f"  [Retry] Season {season} Week {week}: Strict constraints too tight ({len(valid_samples)} samples), retrying with allow_ties=True")
+            valid_samples = []
+            for _ in range(n_samples):
+                fan_percent = np.random.dirichlet(np.ones(n_contestants))
+                is_valid = self.check_rank_constraints_fast(
+                    judge_percent, fan_percent,
+                    survivor_idx, exited_idx,
+                    finals_rank_idx, exited_placement_idx,
+                    allow_ties=True, skip_placement=False
+                )
+                if is_valid:
+                    valid_samples.append(fan_percent)
+
+        # 尝试3：如果仍然不足，跳过placement约束（仅Rank System）
+        if len(valid_samples) < n_samples * 0.01 and not use_percentage_system:
+            print(f"  [Retry] Season {season} Week {week}: Still insufficient ({len(valid_samples)} samples), retrying with skip_placement=True")
+            valid_samples = []
+            for _ in range(n_samples):
+                fan_percent = np.random.dirichlet(np.ones(n_contestants))
+                is_valid = self.check_rank_constraints_fast(
+                    judge_percent, fan_percent,
+                    survivor_idx, exited_idx,
+                    finals_rank_idx, exited_placement_idx,
+                    allow_ties=True, skip_placement=True
+                )
+                if is_valid:
+                    valid_samples.append(fan_percent)
+
         return np.array(valid_samples)
 
-    def estimate_fan_percent(self, n_samples=10000):
-        """估计所有周次的观众分 (支持两种评分系统 + Placement约束)"""
+    def estimate_fan_percent(self, n_samples=10000, cache_file='fan_est_cache.csv'):
+        """
+        估计所有周次的观众分 (支持两种评分系统 + Placement约束 + 缓存机制)
+
+        参数:
+        - n_samples: 蒙特卡洛采样次数
+        - cache_file: 缓存文件路径，如果存在则直接加载，否则运行模拟后保存
+        """
         print("\n" + "=" * 60)
         print("Step 2: Monte Carlo Sampling for Fan Percent Estimation")
-        print("Step 2: (Enhanced with Dual Scoring Systems + Placement)")
+        print("Step 2: (Enhanced with Dual Scoring Systems + Placement + Caching)")
         print("=" * 60)
+
+        # 检查缓存文件是否存在
+        if cache_file and os.path.exists(cache_file):
+            print(f"\n[CACHE] Found existing cache file: {cache_file}")
+            print("[CACHE] Loading cached results...")
+            try:
+                self.estimation_results = pd.read_csv(cache_file, encoding='utf-8-sig')
+                print(f"[CACHE] Successfully loaded {len(self.estimation_results)} records from cache")
+                print("[CACHE] Skipping Monte Carlo simulation")
+                print("=" * 60)
+                return self.estimation_results
+            except Exception as e:
+                print(f"[CACHE] Warning: Failed to load cache file: {e}")
+                print("[CACHE] Will run simulation instead")
 
         if self.processed_data is None:
             raise ValueError("Please run preprocess_data() first")
@@ -768,6 +891,15 @@ class FanPercentEstimator:
 
         self.estimation_results = pd.DataFrame(results)
         print(f"\nEstimation completed! Total records: {len(self.estimation_results)}")
+
+        # 保存缓存
+        if cache_file:
+            try:
+                self.estimation_results.to_csv(cache_file, index=False, encoding='utf-8-sig')
+                print(f"\n[CACHE] Results saved to cache file: {cache_file}")
+                print(f"[CACHE] Next run will load from cache automatically")
+            except Exception as e:
+                print(f"\n[CACHE] Warning: Failed to save cache file: {e}")
 
         return self.estimation_results
     
