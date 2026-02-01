@@ -1,0 +1,246 @@
+这是一个非常系统化且高要求的分析任务。第三问的核心从“预测（Prediction）”转向了**“归因（Attribution）”**。我们需要剥离出各个因素（舞伴、行业、年龄、地域）对最终结果的独立贡献，并对比这些因素在“评委眼光”和“大众审美”中的不同权重。以下是为您设计的全流程建模方案，包含逻辑链路、指标构建、模型选择、典型案例筛选逻辑以及完整的代码框架。一、 整体逻辑链路 (The Workflow)数据融合 (Data Fusion)：将原始数据（人口统计学、舞伴）与第二问算出的“隐形数据”（观众票数预估、铁粉基数）合并。特征工程 (Feature Engineering)：将复杂的类别变量（如26个行业、50个州）降维成可分析的大类（如5大行业、4大地理分区）。双模归因 (Dual-Model Attribution)：建立两个平行模型——“评委偏好模型” 与 “观众偏好模型”。效应分离 (Effect Separation)：从模型中提取系数（Coefficients）和随机效应（Random Effects），量化各维度的影响力。差异化分析 (Gap Analysis)：对比两套系数，画出森林图，找出“双标”维度。典型案例挖掘 (Case Study Mining)：基于模型残差（Residuals）找出那些“本来该赢却输了”或“本来该输却赢了”的异常点进行个案分析。二、 指标构建与定义 (Indicator Construction)我们需要构建两组目标变量 ($Y$) 和四组解释变量 ($X$)。1. 目标变量 ($Y$)：衡量“成功”的标准我们需要两个 $Y$ 来分别代表两股势力：$Y_{judge}$ (评委认可度)：定义：选手全季标准化评委分 (Z-Score) 的均值。构建：直接取 Q2 代码算出的 A_core (Ability Score)。$Y_{fan}$ (观众喜爱度)：定义：选手全季估计票数份额的均值。构建：直接取 Q2 代码算出的 fan_share_mean 或 P_avg。2. 解释变量 ($X$)：四个分析维度$X_{partner}$ (舞伴效应 - Pro Efficiency)：构建：专业舞伴是类别变量。处理：由于舞伴跨赛季重复出现，我们将使用混合效应模型 (Mixed Effects Model)，将舞伴视为“随机效应 (Random Effect)”。模型算出的 Intercept 差异就是该舞伴的“自带光环值”。$X_{industry}$ (行业偏见 - Sector Bias)：构建：将 20+ 个细分职业归纳为：Athlete (运动员), Actor (演员), Music (歌手), Reality (真人秀), Host/Other (其他)。处理：One-Hot 编码。$X_{age}$ (年龄歧视 - Age Penalty)：构建：直接使用数值型年龄。处理：为了捕捉“太老不行”或“太小不行”的非线性，可以加入年龄的平方项 ($Age^2$)。$X_{region}$ (地域因素 - Regional Base)：构建：将 Homestate 映射为美国四大普查区：Northeast, Midwest, South, West，以及 International。处理：One-Hot 编码。三、 核心模型选择：线性混合效应模型 (LMM)这是解决此类问题的S-Tier方法。为什么不用普通回归？因为普通回归无法处理“舞伴跨赛季重复出现”这一特点。LMM 可以分离出“舞伴的个人能力”和“明星的个人特征”。模型方程组：评委模型 (Judge Model):$$Y_{judge} = \beta_{0J} + \beta_{1J}Age + \beta_{2J}Industry + \beta_{3J}Region + \underbrace{u_{partnerJ}}_{\text{舞伴随机效应}} + \epsilon$$观众模型 (Fan Model):$$Y_{fan} = \beta_{0F} + \beta_{1F}Age + \beta_{2F}Industry + \beta_{3F}Region + \underbrace{u_{partnerF}}_{\text{舞伴随机效应}} + \epsilon$$我们关注什么？系数 ($\beta$)：代表行业/年龄/地域的影响。如果 $\beta_{Reality}$ 在观众模型中显著 > 0，在评委模型中 ≈ 0，说明真人秀明星“虚火”（有人气没技术）。随机效应 ($u_{partner}$)：代表舞伴的能力。$u_{Derek}$ 的值就是 Derek Hough 的“冠军制造机指数”。四、 典型案例挖掘逻辑 (Case Mining)我们通过计算**“期望”与“现实”的偏差**来找典型：意难平 (Under-appreciated / Robbed)：特征：$Y_{judge}$ (实力) 极高，但 $Y_{fan}$ (人气) 极低。筛选：算出 Gap = Rank(Judge) - Rank(Fan)，取 Gap 最大的 Top 3。皇族 (Over-rated / Cult Favorite)：特征：$Y_{judge}$ 低，但 $Y_{fan}$ 极高。筛选：取 Gap 最小的 Bottom 3 (即负数最大)。天选之子 (Total Package)：特征：两项双高，且模型预测偏差极小（说明他的红是符合模型规律的，比如又是运动员又年轻）。五、 完整代码框架 (Python)这段代码将实现全流程：数据整合 -> LMM建模 -> 指标提取 -> 可视化。你需要安装 statsmodels 库：pip install statsmodelsPythonimport pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from sklearn.preprocessing import StandardScaler
+
+class DWTS_Factor_Analyzer:
+    def __init__(self, raw_data_path, estimated_votes_path):
+        # 1. 加载原始数据 (包含 Demographics)
+        self.raw_df = pd.read_csv(raw_data_path, encoding='utf-8-sig')
+        # 2. 加载 Q2 算出的预估数据 (包含 Fan Votes)
+        self.est_df = pd.read_csv(estimated_votes_path)
+        self.merged_df = None
+        self.model_judge = None
+        self.model_fan = None
+        self.effects_df = None
+
+    def preprocess_and_merge(self):
+        """
+        数据融合与特征工程
+        """
+        print("[Step 1] Preprocessing and merging data...")
+        
+        # --- A. 聚合 Q2 数据得到每位选手的赛季均值 ---
+        # 我们需要一个选手一个点的 Summary Data
+        fan_stats = self.est_df.groupby(['season', 'celebrity']).agg({
+            'fan_votes_mean': 'mean', # 绝对票数
+            'fan_share_mean': 'mean', # 相对份额 (推荐用这个做回归，消除赛季总票数波动影响)
+            'judge_score': 'mean'     # 原始评委分
+        }).reset_index()
+
+        # --- B. 融合原始人口统计学信息 ---
+        # 注意：需要去重，因为 raw_df 是每周一行
+        demographics = self.raw_df[['season', 'celebrity_name', 'ballroom_partner', 
+                                    'celebrity_industry', 'celebrity_age_during_season', 
+                                    'celebrity_homestate']].drop_duplicates()
+        
+        self.merged_df = pd.merge(fan_stats, demographics, 
+                                  left_on=['season', 'celebrity'], 
+                                  right_on=['season', 'celebrity_name'])
+
+        # --- C. 特征工程 ---
+        
+        # 1. 行业归类 (Industry Grouping)
+        def map_industry(ind):
+            ind = str(ind).lower()
+            if any(x in ind for x in ['athlete', 'nfl', 'nba', 'olympian', 'gymnast']): return 'Athlete'
+            if any(x in ind for x in ['actor', 'actress', 'movie', 'tv']): return 'Actor'
+            if any(x in ind for x in ['singer', 'rapper', 'music', 'pop']): return 'Musician'
+            if any(x in ind for x in ['reality', 'bachelor', 'housewife']): return 'RealityStar'
+            return 'Other'
+        
+        self.merged_df['Industry_Group'] = self.merged_df['celebrity_industry'].apply(map_industry)
+
+        # 2. 地域归类 (Region Mapping)
+        # 简单映射示例，实际可完善
+        def map_region(state):
+            # 这里简化处理，你可以加上完整的州映射表
+            south = ['Texas', 'Florida', 'Georgia', 'Tennessee']
+            west = ['California', 'Nevada', 'Washington', 'Hawaii']
+            northeast = ['New York', 'Massachusetts', 'New Jersey']
+            if state in south: return 'South'
+            if state in west: return 'West'
+            if state in northeast: return 'Northeast'
+            return 'Midwest/Other' # 默认归类
+            
+        self.merged_df['Region_Group'] = self.merged_df['celebrity_homestate'].apply(map_region)
+
+        # 3. 目标变量标准化 (Z-Score)
+        # 评委分和观众份额都需要标准化，以便比较系数大小
+        scaler = StandardScaler()
+        self.merged_df['Y_Judge'] = scaler.fit_transform(self.merged_df[['judge_score']])
+        self.merged_df['Y_Fan'] = scaler.fit_transform(self.merged_df[['fan_share_mean']])
+        
+        print(f"  -> Merged Data Shape: {self.merged_df.shape}")
+
+    def data_overview_visualization(self):
+        """
+        可视化 1: 各维度数据概览 (Overview)
+        """
+        print("[Step 2] Generating Data Overview...")
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        
+        # Age Distribution
+        sns.histplot(self.merged_df['celebrity_age_during_season'], kde=True, ax=axes[0], color='skyblue')
+        axes[0].set_title('Age Distribution')
+        
+        # Industry Count
+        sns.countplot(y='Industry_Group', data=self.merged_df, ax=axes[1], order=self.merged_df['Industry_Group'].value_counts().index)
+        axes[1].set_title('Industry Counts')
+        
+        # Region Count
+        sns.countplot(y='Region_Group', data=self.merged_df, ax=axes[2])
+        axes[2].set_title('Region Counts')
+        
+        plt.tight_layout()
+        plt.show()
+
+    def build_mixed_effects_models(self):
+        """
+        建立混合效应模型 (LMM)
+        Fixed Effects: Age, Industry, Region
+        Random Effects: Pro Partner
+        """
+        print("[Step 3] Building Mixed Effects Models...")
+        
+        # 公式: Y ~ Age + Industry + Region + (1|Partner)
+        formula = " ~ celebrity_age_during_season + C(Industry_Group) + C(Region_Group)"
+        
+        # 1. 评委模型
+        self.model_judge = smf.mixedlm("Y_Judge" + formula, 
+                                       self.merged_df, 
+                                       groups=self.merged_df["ballroom_partner"]).fit()
+        
+        # 2. 观众模型
+        self.model_fan = smf.mixedlm("Y_Fan" + formula, 
+                                     self.merged_df, 
+                                     groups=self.merged_df["ballroom_partner"]).fit()
+        
+        print("  -> Models converged.")
+        # print(self.model_judge.summary()) # 调试用
+
+    def extract_and_compare_effects(self):
+        """
+        提取系数，准备绘制森林图
+        """
+        print("[Step 4] Extracting Effects...")
+        
+        # 提取固定效应 (Fixed Effects)
+        # 我们要把两个模型的系数拼在一起
+        params_j = self.model_judge.params.drop('Intercept') # 去掉截距
+        conf_j = self.model_judge.conf_int().drop('Intercept')
+        
+        params_f = self.model_fan.params.drop('Intercept')
+        conf_f = self.model_fan.conf_int().drop('Intercept')
+        
+        # 构建绘图数据
+        effects = []
+        for idx in params_j.index:
+            # 清理变量名
+            clean_name = idx.replace("C(Industry_Group)[T.", "").replace("C(Region_Group)[T.", "").replace("]", "")
+            
+            effects.append({
+                'Factor': clean_name,
+                'Type': 'Judge Preference',
+                'Coef': params_j[idx],
+                'Lower': conf_j.loc[idx][0],
+                'Upper': conf_j.loc[idx][1]
+            })
+            effects.append({
+                'Factor': clean_name,
+                'Type': 'Fan Preference',
+                'Coef': params_f[idx],
+                'Lower': conf_f.loc[idx][0],
+                'Upper': conf_f.loc[idx][1]
+            })
+            
+        self.effects_df = pd.DataFrame(effects)
+
+    def analyze_pro_partners(self):
+        """
+        分析舞伴效应 (Random Effects)
+        """
+        print("[Step 5] Analyzing Pro Partners...")
+        
+        # 提取随机效应 (Best Linear Unbiased Predictors - BLUPs)
+        re_judge = self.model_judge.random_effects
+        re_fan = self.model_fan.random_effects
+        
+        partners = []
+        for name in re_judge.keys():
+            partners.append({
+                'Partner': name,
+                'Judge_Buff': re_judge[name][0], # 舞伴对评委分的影响
+                'Fan_Buff': re_fan[name][0]      # 舞伴对观众票的影响
+            })
+            
+        partner_df = pd.DataFrame(partners)
+        
+        # 找出 "冠军制造机" (Judge Buff 高) 和 "人气王舞伴" (Fan Buff 高)
+        top_judge_partners = partner_df.nlargest(5, 'Judge_Buff')
+        top_fan_partners = partner_df.nlargest(5, 'Fan_Buff')
+        
+        print("\nTop Partners (Technical/Judge):")
+        print(top_judge_partners[['Partner', 'Judge_Buff']])
+        print("\nTop Partners (Popularity/Fan):")
+        print(top_fan_partners[['Partner', 'Fan_Buff']])
+        
+        return partner_df
+
+    def visualize_forest_plot(self):
+        """
+        可视化 2: 森林图 (Forest Plot) - 核心归因图
+        """
+        plt.figure(figsize=(12, 8))
+        
+        # 绘制点估计和误差棒
+        sns.pointplot(data=self.effects_df, x='Coef', y='Factor', hue='Type', 
+                      join=False, dodge=0.4, capsize=0.2, palette=['#1f77b4', '#ff7f0e'])
+        
+        # 添加 0 线
+        plt.axvline(0, color='grey', linestyle='--', alpha=0.5)
+        plt.title('Attribution Analysis: What drives Judges vs. Fans? (Forest Plot)', fontsize=16)
+        plt.xlabel('Standardized Effect Size (Beta Coefficient)')
+        plt.grid(True, alpha=0.3)
+        plt.show()
+
+    def visualize_case_studies_radar(self):
+        """
+        可视化 3: 典型人物雷达图
+        """
+        print("[Step 6] Mining Case Studies...")
+        
+        # 计算偏差: Rank Gap
+        self.merged_df['Rank_Judge'] = self.merged_df['Y_Judge'].rank(ascending=False)
+        self.merged_df['Rank_Fan'] = self.merged_df['Y_Fan'].rank(ascending=False)
+        self.merged_df['Gap'] = self.merged_df['Rank_Judge'] - self.merged_df['Rank_Fan']
+        
+        # 选人: Gap最大的正值(意难平), Gap最小的负值(皇族)
+        robbed = self.merged_df.nlargest(1, 'Gap').iloc[0]
+        overrated = self.merged_df.nsmallest(1, 'Gap').iloc[0]
+        
+        cases = [robbed, overrated]
+        
+        # 准备雷达图数据 (归一化到 0-1 以便画图)
+        categories = ['Technical Score', 'Fan Votes', 'Partner Buff', 'Industry Bonus', 'Youth Bonus']
+        
+        # 为了画图，需要简单的归一化逻辑 (这里仅示意)
+        # 实际代码需要从模型结果里提取该人的 Industry Bonus 等
+        
+        print(f"Selected Cases: Robbed={robbed['celebrity']}, Overrated={overrated['celebrity']}")
+        # (此处省略具体的 Radar Chart 画图代码，可使用 matplotlib polar projection)
+
+# ================= 使用示例 =================
+# analyzer = DWTS_Factor_Analyzer('raw_data.csv', 'estimated_votes.csv')
+# analyzer.preprocess_and_merge()
+# analyzer.data_overview_visualization() # 概览
+# analyzer.build_mixed_effects_models()  # 建模
+# analyzer.extract_and_compare_effects() # 提取系数
+# analyzer.visualize_forest_plot()       # 森林图 (关键输出)
+# partner_stats = analyzer.analyze_pro_partners() # 舞伴分析
+六、 可视化构建指南 (Visualization Strategy)基于模型算出的数据，您的三张核心图表应该这样画：森林图 (Forest Plot)：数据源：extract_and_compare_effects 生成的 effects_df。看点：如果 "Athlete" 的橙色点（观众）在 0 右边很远，蓝色点（评委）在 0 附近，直接证明了“运动员在观众中有巨大优势，但在评委眼中一般”。舞伴散点图/热力图：数据源：analyze_pro_partners 生成的 partner_df。画法：X轴 = Judge Buff，Y轴 = Fan Buff。看点：落在右上角的舞伴（如 Derek Hough）就是“既能教好技术，又有人格魅力”的六边形战士；落在右下角的舞伴是“技术流但吸粉差”。典型人物雷达图：数据源：从 merged_df 中筛选出的特定行。画法：五个维度（技术分、观众分、舞伴加成、行业优势、年龄优势）。看点：Bobby Bones 的雷达图会呈现“技术分极度凹陷，但观众分、地域优势拉满”的形状。这个方案保证了逻辑的连贯性：从数据融合 -> 科学归因 (LMM) -> 量化对比 (Forest Plot) -> 个案验证。这正是数模竞赛中最受青睐的闭环结构。
+
+这是第三问的模型和伪代码，请在该目录下新建一个Q3文件夹并新建代码文件来完成第三题的模型搭建，请将其转化为完整的可运行代码，并优化可视化方案，线条颜色优化，字体加粗：所有 set_title 和 suptitle 都增加了 fontweight='bold' 参数。

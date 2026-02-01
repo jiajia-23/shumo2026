@@ -1,0 +1,43 @@
+  模型三要获得观众投票的相关数据，可以从以下两个文件中获取：
+  
+  实际票数预估总表: Q1/dual_source_analysis\all_seasons_absolute_votes.csv
+  支持率预估总表: Q1/dual_source_analysis\all_seasons_vote_shares.csv
+
+  除此之外，现在运行还有报错[Initialization] Loading data...
+  Loaded raw data: (421, 53)
+  Loaded estimated votes: (2565, 13)
+
+======================================================================
+STARTING FULL ANALYSIS PIPELINE
+======================================================================
+
+[Step 1] Preprocessing and merging data...
+Traceback (most recent call last):
+  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 893, in <module>
+    main()
+  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 879, in main
+    analyzer.run_full_analysis()
+  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 827, in run_full_analysis
+    self.preprocess_and_merge()
+  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 242, in preprocess_and_merge
+    judge_stats = self.raw_df.groupby(['season', 'celebrity_name']).agg({
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\groupby\generic.py", line 1432, in aggregate
+    result = op.agg()
+             ^^^^^^^^
+  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 190, in agg
+    return self.agg_dict_like()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 423, in agg_dict_like
+    return self.agg_or_apply_dict_like(op_name="agg")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 1603, in agg_or_apply_dict_like
+    result_index, result_data = self.compute_dict_like(
+                                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 462, in compute_dict_like
+    func = self.normalize_dictlike_arg(op_name, selected_obj, func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 663, in normalize_dictlike_arg
+    raise KeyError(f"Column(s) {list(cols)} do not exist")
+KeyError: "Column(s) ['judge_score', 'week'] do not exist"
+(base) PS D:\UNIVERSITY\美赛2026\code> 

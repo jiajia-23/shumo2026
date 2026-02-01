@@ -23,7 +23,7 @@ import os
 # ==========================================
 
 # Specify which seasons to analyze (list of season numbers)
-SEASONS_TO_ANALYZE = [13]  # Default: Season 15 only
+SEASONS_TO_ANALYZE = [8]  # Default: Season 15 only
 
 # Number of particles (adjust for speed vs accuracy trade-off)
 N_PARTICLES = 500  # 500 is a good balance for single season analysis
