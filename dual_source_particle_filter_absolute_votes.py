@@ -306,7 +306,7 @@ class Particle:
         self.history = []
         self.weight = 1.0
 
-    def step(self, week_df, season, season_len):
+    def step(self, week_df, season, season_len, force_survival=False):
         """
         Advance particle by one week and check consistency
 
@@ -316,6 +316,7 @@ class Particle:
             week_df: DataFrame with current week's data
             season: Season number
             season_len: Total season length (for N(t) calculation)
+            force_survival: If True, ignore elimination constraints (keep prediction anyway)
 
         Returns:
             Boolean: True if particle is consistent with observations
@@ -364,17 +365,22 @@ class Particle:
         fan_shares = raw_votes / np.sum(raw_votes)
 
         # 6. Check consistency with elimination
-        eliminated_mask = week_df['is_exited'].values
-        eliminated_idx = np.where(eliminated_mask)[0]
-        safe_idx = np.where(~eliminated_mask)[0]
+        if force_survival:
+            # Force mode: ignore elimination constraints, always accept prediction
+            is_consistent = True
+        else:
+            # Normal mode: check elimination constraints
+            eliminated_mask = week_df['is_exited'].values
+            eliminated_idx = np.where(eliminated_mask)[0]
+            safe_idx = np.where(~eliminated_mask)[0]
 
-        total_scores, score_type = ScoringSystem.calculate_total_rank(
-            active_judge_scores, fan_shares, season
-        )
+            total_scores, score_type = ScoringSystem.calculate_total_rank(
+                active_judge_scores, fan_shares, season
+            )
 
-        is_consistent = ScoringSystem.check_elimination_constraint(
-            total_scores, score_type, eliminated_idx, safe_idx, season
-        )
+            is_consistent = ScoringSystem.check_elimination_constraint(
+                total_scores, score_type, eliminated_idx, safe_idx, season
+            )
 
         # 7. Record snapshot if consistent
         if is_consistent:
@@ -459,32 +465,45 @@ class DualSourceEstimator:
         for week in tqdm(weeks, desc=f"  S{season}", leave=False):
             week_df = season_df[season_df['week'] == week]
 
-            # --- Step A: Particle propagation and validation ---
+            # --- Step A: Particle propagation and validation (Standard) ---
             valid_particles = []
             for p in particles:
                 p_next = copy.deepcopy(p)
-                # MODIFIED: Pass season_len to step()
-                if p_next.step(week_df, season, season_len):
+                # Normal attempt without forcing
+                if p_next.step(week_df, season, season_len, force_survival=False):
                     valid_particles.append(p_next)
 
-            # --- Step B: Credibility assessment ---
+            # --- Step B & C: Handling Depletion with Fallback ---
             survival_rate = len(valid_particles) / len(particles) if particles else 0
+
+            # If survival rate is too low or complete depletion
+            if survival_rate < CONFIG['MIN_SURVIVAL_RATE']:
+                print(f"    Warning: S{season} W{week} - Low survival ({survival_rate:.2%}), engaging fallback...")
+
+                # If complete depletion (len=0), must use force mode to recover data
+                if len(valid_particles) == 0:
+                    fallback_particles = []
+                    for p in particles:  # Use previous week's particles
+                        p_next = copy.deepcopy(p)
+                        # KEY FIX: Enable force_survival=True, ignore elimination constraints
+                        p_next.step(week_df, season, season_len, force_survival=True)
+                        fallback_particles.append(p_next)
+                    valid_particles = fallback_particles
+                    survival_rate = 0.001  # Mark as extremely low confidence, but keep data
+
+                # If only low survival but not complete depletion, use resampling
+                else:
+                    indices = np.random.choice(len(valid_particles), CONFIG['N_PARTICLES'], replace=True)
+                    valid_particles = [copy.deepcopy(valid_particles[i]) for i in indices]
+
+            # Record credibility (ensure it's recorded)
             self.credibility_scores.append({
                 'season': season,
                 'week': week,
                 'survival_rate': survival_rate,
-                'n_valid': len(valid_particles),
+                'n_valid': len(valid_particles),  # valid_particles is now guaranteed non-empty
                 'n_total': len(particles)
             })
-
-            # --- Step C: Handle particle depletion ---
-            if survival_rate < CONFIG['MIN_SURVIVAL_RATE']:
-                print(f"    Warning: S{season} W{week} - Low survival rate ({survival_rate:.2%})")
-                if len(valid_particles) > 0:
-                    valid_particles = copy.deepcopy(particles)
-                else:
-                    particles = [Particle(contestant_meta) for _ in range(CONFIG['N_PARTICLES'])]
-                    continue
 
             # --- Step D: Result aggregation ---
             current_estimates = {}
@@ -638,81 +657,118 @@ class DualSourceEstimator:
 def fuse_predictions(old_df, new_df):
     """
     融合旧模型(MC)和新模型(PF)的预测结果
-    【核心修正】：融合后必须同步更新绝对票数 (fan_votes_mean)
-
-    核心思路：
-    - 旧模型 = 硬约束（物理现实，必须满足淘汰规则）
-    - 新模型 = 软约束（历史惯性预测）
-    - 当冲突时，将新预测投影到旧区间边界上
-    - 修正后立即重新计算绝对票数
+    【核心修正】：
+    1. 保证 Output Interval 严格被 Old Interval 包含 (Strict Containment)
+    2. 即使发生完全错位，结果也会被"挤压"在旧区间的边界内侧，绝不溢出。
+    3. 同步更新绝对票数
 
     Args:
         old_df: 蒙特卡洛结果 (包含 fan_percent_mean, fan_percent_std)
         new_df: 粒子滤波结果 (包含 fan_share_mean, fan_share_std)
-
-    Returns:
-        fused_df: 融合后的 DataFrame (保留new_df的所有额外列)
     """
-    print("\n[Interval Fusion] 开始融合旧模型和新模型...")
+    print("\n[Interval Fusion] 开始融合旧模型和新模型 (Strict Containment Mode)...")
 
-    # 1. 准备数据，按 (season, week, celebrity) 对齐
+    # 1. 准备数据
     old_renamed = old_df[['season', 'week', 'celebrity', 'fan_percent_mean', 'fan_percent_std']].rename(
         columns={'fan_percent_mean': 'mu_old', 'fan_percent_std': 'std_old'}
     )
 
-    # 保留new_df的所有列
     new_df_copy = new_df.copy()
     new_df_copy = new_df_copy.rename(
         columns={'fan_share_mean': 'mu_new', 'fan_share_std': 'std_new'}
     )
 
+    # 建议使用 outer join 防止数据丢失，然后填充缺失值
     merged = pd.merge(new_df_copy, old_renamed[['season', 'week', 'celebrity', 'mu_old', 'std_old']],
-                      on=['season', 'week', 'celebrity'], how='inner')
+                      on=['season', 'week', 'celebrity'], how='outer')
 
-    fusion_stats = {'Trust New': 0, 'Intersection': 0, 'Clamped High': 0, 'Clamped Low': 0}
+    # 填充逻辑：如果某一方缺失，完全信任另一方
+    # (注意：如果旧模型缺失，说明没有物理约束，只能信任新模型；反之亦然)
+    for col in ['mu_old', 'std_old']:
+        merged[col] = merged[col].fillna(merged[col.replace('old', 'new')])
+    for col in ['mu_new', 'std_new']:
+        merged[col] = merged[col].fillna(merged[col.replace('new', 'old')])
+
+    fusion_stats = {'Inside': 0, 'Intersection': 0, 'Projected High': 0, 'Projected Low': 0}
 
     # 2. 逐行融合
     for idx, row in merged.iterrows():
         mu_old, std_old = row['mu_old'], row['std_old']
         mu_new, std_new = row['mu_new'], row['std_new']
 
-        # 定义 95% 置信区间边界 (2 sigma)
+        # 1. 定义 95% 置信区间边界 (Mean ± 2*Std)
         L_old, U_old = mu_old - 2*std_old, mu_old + 2*std_old
         L_new, U_new = mu_new - 2*std_new, mu_new + 2*std_new
 
-        # --- 核心融合逻辑 ---
+        # 2. 计算理想的新区间边界 (L_final, U_final)
+        # 目标：找到一个区间，既尽可能保留 New 的信息，又严格在 Old 内部
+
+        # 尝试取交集
+        L_final = max(L_old, L_new)
+        U_final = min(U_old, U_new)
+
+        ftype = "Intersection"
+
+        # 3. 处理三种情况
         if L_new >= L_old and U_new <= U_old:
-            mu_final, std_final, ftype = mu_new, std_new, "Trust New"
-        elif L_new > U_old:  # 新预测太高 -> 强行按住
-            mu_final, std_final, ftype = U_old, min(std_old, std_new) * 0.5, "Clamped High"
-        elif U_new < L_old:  # 新预测太低 -> 强行抬升
-            mu_final, std_final, ftype = L_old, min(std_old, std_new) * 0.5, "Clamped Low"
-        else:
-            mu_final = (max(L_old, L_new) + min(U_old, U_new)) / 2
-            std_final = (min(U_old, U_new) - max(L_old, L_new)) / 4
+            # 情况 A: New 完全在 Old 内部 -> 直接信任 New
+            L_final, U_final = L_new, U_new
+            ftype = "Inside"
+
+        elif L_final < U_final:
+            # 情况 B: 有重叠 (交集有效) -> 使用交集
+            # (L_final, U_final 已经是交集了，无需修改)
             ftype = "Intersection"
 
-        std_final = max(std_final, 0.001)
+        else:
+            # 情况 C: 完全不重叠 (Disjoint) -> 投影到边界内侧
+            # 这里的逻辑是：物理约束(Old)是硬道理，必须遵守。
+            # 如果 New 远高于 Old，说明 New 预测过高，应该取 Old 区间的"最上层"部分。
+
+            # 保持 New 的区间宽度，但限制在 Old 内部
+            width_new = U_new - L_new
+
+            if L_new > U_old:
+                # New 太高 -> 挤压在 Old 的上限
+                U_final = U_old
+                # 下限设为 (上限 - 原宽度)，但不能低于 Old 下限
+                L_final = max(L_old, U_old - width_new)
+                ftype = "Projected High"
+
+            elif U_new < L_old:
+                # New 太低 -> 挤压在 Old 的下限
+                L_final = L_old
+                U_final = min(U_old, L_old + width_new)
+                ftype = "Projected Low"
+
+        # 4. 将最终区间 (L_final, U_final) 转换回 Mean 和 Std
+        # 反解公式：Width = 4 * Std  =>  Std = Width / 4
+        #          Mean = (L + U) / 2
+
+        mu_result = (L_final + U_final) / 2
+        std_result = (U_final - L_final) / 4
+
+        # 防止 std 过小 (数值稳定性)
+        std_result = max(std_result, 1e-4)
+
         fusion_stats[ftype] += 1
 
         # 更新 Share (比例)
-        merged.at[idx, 'mu_new'] = mu_final
-        merged.at[idx, 'std_new'] = std_final
+        merged.at[idx, 'mu_new'] = mu_result
+        merged.at[idx, 'std_new'] = std_result
         merged.at[idx, 'fusion_type'] = ftype
 
-        # === 【关键修复】同步更新 Absolute Votes (绝对票数) ===
-        # 获取该赛季总长度 (为了计算 N(t))
+        # === 同步更新 Absolute Votes (绝对票数) ===
+        # 必须重新计算 N(t)
         season_len = merged[merged['season'] == row['season']]['week'].max()
+        # 注意：这里需要引用全局 CONFIG，或者简单的 10.0 (million) 逻辑
+        # 建议直接调用原文件里已有的 get_total_votes 函数
         current_total_votes = get_total_votes(row['week'], season_len, CONFIG['BASE_VOTES_MILLION'] * 1000000)
 
-        # 强制刷新绝对票数 = 修正后的比例 * 总人数
-        merged.at[idx, 'fan_votes_mean'] = mu_final * current_total_votes
-        merged.at[idx, 'fan_votes_std'] = std_final * current_total_votes
+        merged.at[idx, 'fan_votes_mean'] = mu_result * current_total_votes
+        merged.at[idx, 'fan_votes_std'] = std_result * current_total_votes
 
-    # 重命名回原始列名
     fused_df = merged.rename(columns={'mu_new': 'fan_share_mean', 'std_new': 'fan_share_std'})
-
-    # 删除临时列
     fused_df = fused_df.drop(columns=['mu_old', 'std_old'])
 
     print(f"  融合完成: {len(fused_df)} 条记录")

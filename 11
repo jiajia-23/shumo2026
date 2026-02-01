@@ -1,43 +1,269 @@
-  模型三要获得观众投票的相关数据，可以从以下两个文件中获取：
-  
-  实际票数预估总表: Q1/dual_source_analysis\all_seasons_absolute_votes.csv
-  支持率预估总表: Q1/dual_source_analysis\all_seasons_vote_shares.csv
+1.现在我发现一个问题，旧预测和新预测，同一赛季同一选手的周数数据长度是不一样的，这就导致再dual里面画新旧对比预测的曲线的时候，好像蓝色曲线的点总比红色少一个，先找出原因，再看看dual里面绘图逻辑，有没有因为长度不一样就画错位了
 
-  除此之外，现在运行还有报错[Initialization] Loading data...
-  Loaded raw data: (421, 53)
-  Loaded estimated votes: (2565, 13)
+这是一个非常敏锐的发现！你观察到的“蓝色曲线比红色少一个点”以及“长度不一致”的问题，其根本原因在于粒子滤波（Particle Filter）模型在某些“爆冷淘汰”的周次发生了“粒子全灭”（Particle Depletion），导致该周数据被直接跳过（Drop）了。
 
-======================================================================
-STARTING FULL ANALYSIS PIPELINE
-======================================================================
+由于 fuse_predictions 函数中使用了 how='inner'（内连接），一旦新模型（蓝色）在某一周计算失败（空缺），这一周的数据就会从融合结果中完全消失，导致最终绘图时该周“凭空蒸发”。
 
-[Step 1] Preprocessing and merging data...
-Traceback (most recent call last):
-  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 893, in <module>
-    main()
-  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 879, in main
-    analyzer.run_full_analysis()
-  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 827, in run_full_analysis
-    self.preprocess_and_merge()
-  File "d:\UNIVERSITY\美赛2026\code\Q3\factor_attribution_analysis.py", line 242, in preprocess_and_merge
-    judge_stats = self.raw_df.groupby(['season', 'celebrity_name']).agg({
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\groupby\generic.py", line 1432, in aggregate
-    result = op.agg()
-             ^^^^^^^^
-  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 190, in agg
-    return self.agg_dict_like()
-           ^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 423, in agg_dict_like
-    return self.agg_or_apply_dict_like(op_name="agg")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 1603, in agg_or_apply_dict_like
-    result_index, result_data = self.compute_dict_like(
-                                ^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 462, in compute_dict_like
-    func = self.normalize_dictlike_arg(op_name, selected_obj, func)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\Lib\site-packages\pandas\core\apply.py", line 663, in normalize_dictlike_arg
-    raise KeyError(f"Column(s) {list(cols)} do not exist")
-KeyError: "Column(s) ['judge_score', 'week'] do not exist"
-(base) PS D:\UNIVERSITY\美赛2026\code> 
+核心原因分析
+在 run_season_estimation 函数中，当某一周的粒子存活率极低时，代码逻辑如下：
+
+Python
+# 原始代码片段
+if survival_rate < CONFIG['MIN_SURVIVAL_RATE']:
+    # ... (省略打印)
+    if len(valid_particles) > 0:
+        valid_particles = copy.deepcopy(particles)
+    else:
+        # 【问题所在】：如果粒子全灭 (len=0)，这里直接重置并 continue
+        # continue 导致后面的 "Result aggregation" 代码块被跳过
+        # 因此这一周在 results 列表中完全没有记录！
+        particles = [Particle(contestant_meta) for _ in range(CONFIG['N_PARTICLES'])]
+        continue 
+当遇到“高分选手被淘汰”（Shock Elimination）时（例如第1季第4周 Rachel Hunter 被淘汰），模型很难找到符合条件的粒子，导致 valid_particles 为空，触发 continue，从而导致该周数据缺失。
+
+解决方案
+我们需要修改逻辑：当无法找到符合“淘汰约束”的粒子时，不应该跳过这一周，而应该“强制”保留当前的预测结果（即使它不能完美解释淘汰结果），并标记为低置信度。 这样可以保证曲线连续，且至少有一个“基于得分的最佳猜测”。
+
+请按以下步骤修改 dual_source_particle_filter_absolute_votes.py：
+
+第一步：修改 Particle.step 方法
+增加一个 force_survival 参数，允许在紧急情况下忽略淘汰约束，强行保留数据。
+
+Python
+# 在 Particle 类中找到 step 方法，修改定义和逻辑
+# 原定义: def step(self, week_df, season, season_len):
+# 修改后:
+    def step(self, week_df, season, season_len, force_survival=False):
+        """
+        Advance particle by one week
+        force_survival: If True, ignore elimination constraints (keep prediction anyway)
+        """
+        # ... (前面的代码保持不变: 1. Extract..., 2. Predict..., 3. Get total..., 4. Calculate...)
+
+        # 5. Normalize to get shares (保持不变)
+        raw_votes = np.array(raw_votes)
+        fan_shares = raw_votes / np.sum(raw_votes)
+
+        # 6. Check consistency (修改这里)
+        if force_survival:
+            is_consistent = True  # 强制通过
+        else:
+            eliminated_mask = week_df['is_exited'].values
+            eliminated_idx = np.where(eliminated_mask)[0]
+            safe_idx = np.where(~eliminated_mask)[0]
+
+            total_scores, score_type = ScoringSystem.calculate_total_rank(
+                active_judge_scores, fan_shares, season
+            )
+
+            is_consistent = ScoringSystem.check_elimination_constraint(
+                total_scores, score_type, eliminated_idx, safe_idx, season
+            )
+
+        # 7. Record snapshot if consistent (保持不变)
+        if is_consistent:
+            # ... (snapshot 记录逻辑不变)
+            return True
+        else:
+            return False
+第二步：修改 run_season_estimation 逻辑
+在粒子全灭时，启动“救援模式”：再次运行 step 但开启 force_survival=True。
+
+Python
+# 在 DualSourceEstimator 类中找到 run_season_estimation 方法
+# 替换原来的 for week 循环体中的 "Step A" 到 "Step C" 部分
+
+        for week in tqdm(weeks, desc=f"  S{season}", leave=False):
+            week_df = season_df[season_df['week'] == week]
+
+            # --- Step A: Particle propagation and validation (Standard) ---
+            valid_particles = []
+            for p in particles:
+                p_next = copy.deepcopy(p)
+                # 正常尝试，不强制
+                if p_next.step(week_df, season, season_len, force_survival=False):
+                    valid_particles.append(p_next)
+
+            # --- Step B & C: Handling Depletion with Fallback ---
+            survival_rate = len(valid_particles) / len(particles) if particles else 0
+            
+            # 如果存活率太低或全灭
+            if survival_rate < CONFIG['MIN_SURVIVAL_RATE']:
+                print(f"    Warning: S{season} W{week} - Low survival ({survival_rate:.2%}), engaging fallback...")
+                
+                # 如果完全全灭 (len=0)，必须使用强制模式救回数据
+                if len(valid_particles) == 0:
+                    fallback_particles = []
+                    for p in particles: # 使用上一周的粒子重新跑
+                        p_next = copy.deepcopy(p)
+                        # 【关键修改】开启 force_survival=True，忽略淘汰约束，只保留预测值
+                        p_next.step(week_df, season, season_len, force_survival=True)
+                        fallback_particles.append(p_next)
+                    valid_particles = fallback_particles
+                    survival_rate = 0.001 # 标记为极低置信度，但保留数据
+                
+                # 如果只是存活率低但没全灭，使用重采样扩充 (复用现有逻辑，稍作调整)
+                else:
+                    indices = np.random.choice(len(valid_particles), CONFIG['N_PARTICLES'], replace=True)
+                    valid_particles = [copy.deepcopy(valid_particles[i]) for i in indices]
+
+            # 记录置信度 (确保有记录)
+            self.credibility_scores.append({
+                'season': season,
+                'week': week,
+                'survival_rate': survival_rate,
+                'n_valid': len(valid_particles), # 这里现在的 valid_particles 一定不为空了
+                'n_total': len(particles)
+            })
+
+            # --- Step D: Result aggregation (后续逻辑保持不变) ---
+            # ... (current_estimates 计算代码保持不变)
+            
+            # --- Step E: Resampling for next week (后续逻辑保持不变) ---
+            # ... (resampling 代码保持不变)
+第三步：修改 fuse_predictions 的连接方式（可选但推荐）
+为了防止未来还有漏网之鱼，建议将融合逻辑从 inner 改为 outer，确保即使一方缺数据，另一方的数据也能画出来。
+
+Python
+# 在 fuse_predictions 函数中
+    merged = pd.merge(new_df_copy, old_renamed[['season', 'week', 'celebrity', 'mu_old', 'std_old']],
+                      on=['season', 'week', 'celebrity'], how='outer') # 改为 outer
+
+    # 处理 outer join 产生的 NaN (如果新模型缺数据，信任旧模型；反之亦然)
+    # 这里简单处理：如果 new 缺失 (NaN)，就用 old 填充
+    merged['mu_new'] = merged['mu_new'].fillna(merged['mu_old'])
+    merged['std_new'] = merged['std_new'].fillna(merged['std_old'])
+    # 还需要处理 total votes 相关的填充，但这比较复杂。
+    # 鉴于上面的 "强制救援" 逻辑已经修复了根源，这里保持 'inner' 也可以，
+    # 或者只用 'left' (以新模型为主) 如果你确信新模型现在完整了。
+总结
+你遇到的“曲线错位/少点”是因为粒子滤波在遇到很难解释的淘汰结果时直接“放弃”了那一周的计算。通过添加 force_survival 机制，我们强迫模型在那一周输出一个“最合理的猜测”（即使它无法解释当晚的淘汰），从而保证了数据的连续性和绘图的完整性。
+
+
+2.在此基础上，能否保证输出的新区间一定被旧区间包函呢
+你的直觉非常准确。在当前的代码逻辑中（尤其是“情况 B：Clamped/Forced Center”），我们虽然把均值（Mean）强制拉回到了旧区间的边界上，但由于方差（Std）的存在，生成的置信区间（Mean ± 2*Std）依然会有一半（50%）的区域溢出到旧区间之外。例如：旧区间（硬约束）：[0.1, 0.2] (上限是 0.2)新预测（趋势）：0.3 (远高于 0.2)当前代码逻辑：强制 Mean = 0.2。最终输出区间：0.2 ± 0.05 -> [0.15, 0.25]。问题：0.25 依然超过了硬约束 0.2。这在逻辑上是不严谨的，因为蒙特卡洛（旧模型）已经算出了“0.2以上绝对不可能”。解决方案：完全区间交集法 (Strict Intersection & Projection)要保证 新区间 $\subseteq$ 旧区间，我们不能只处理均值，必须直接处理区间边界。我为你重写了 fuse_predictions 函数。新的逻辑不再去“拉均值”，而是直接计算两个区间的几何交集。如果两个区间完全不重叠（完全错位），则将新区间“投影”并压缩到旧区间的边界内侧，确保绝对包含。请使用以下代码替换 dual_source_particle_filter_absolute_votes.py 中的 fuse_predictions 函数：Pythondef fuse_predictions(old_df, new_df):
+    """
+    融合旧模型(MC)和新模型(PF)的预测结果
+    【核心修正】：
+    1. 保证 Output Interval 严格被 Old Interval 包含 (Strict Containment)
+    2. 即使发生完全错位，结果也会被“挤压”在旧区间的边界内侧，绝不溢出。
+    3. 同步更新绝对票数
+
+    Args:
+        old_df: 蒙特卡洛结果 (包含 fan_percent_mean, fan_percent_std)
+        new_df: 粒子滤波结果 (包含 fan_share_mean, fan_share_std)
+    """
+    print("\n[Interval Fusion] 开始融合旧模型和新模型 (Strict Containment Mode)...")
+
+    # 1. 准备数据
+    old_renamed = old_df[['season', 'week', 'celebrity', 'fan_percent_mean', 'fan_percent_std']].rename(
+        columns={'fan_percent_mean': 'mu_old', 'fan_percent_std': 'std_old'}
+    )
+
+    new_df_copy = new_df.copy()
+    new_df_copy = new_df_copy.rename(
+        columns={'fan_share_mean': 'mu_new', 'fan_share_std': 'std_new'}
+    )
+
+    # 建议使用 outer join 防止数据丢失，然后填充缺失值
+    merged = pd.merge(new_df_copy, old_renamed[['season', 'week', 'celebrity', 'mu_old', 'std_old']],
+                      on=['season', 'week', 'celebrity'], how='outer')
+    
+    # 填充逻辑：如果某一方缺失，完全信任另一方
+    # (注意：如果旧模型缺失，说明没有物理约束，只能信任新模型；反之亦然)
+    for col in ['mu_old', 'std_old']:
+        merged[col] = merged[col].fillna(merged[col.replace('old', 'new')])
+    for col in ['mu_new', 'std_new']:
+        merged[col] = merged[col].fillna(merged[col.replace('new', 'old')])
+
+    fusion_stats = {'Inside': 0, 'Intersection': 0, 'Projected High': 0, 'Projected Low': 0}
+
+    # 2. 逐行融合
+    for idx, row in merged.iterrows():
+        mu_old, std_old = row['mu_old'], row['std_old']
+        mu_new, std_new = row['mu_new'], row['std_new']
+
+        # 1. 定义 95% 置信区间边界 (Mean ± 2*Std)
+        L_old, U_old = mu_old - 2*std_old, mu_old + 2*std_old
+        L_new, U_new = mu_new - 2*std_new, mu_new + 2*std_new
+
+        # 2. 计算理想的新区间边界 (L_final, U_final)
+        # 目标：找到一个区间，既尽可能保留 New 的信息，又严格在 Old 内部
+        
+        # 尝试取交集
+        L_final = max(L_old, L_new)
+        U_final = min(U_old, U_new)
+        
+        ftype = "Intersection"
+
+        # 3. 处理三种情况
+        if L_new >= L_old and U_new <= U_old:
+            # 情况 A: New 完全在 Old 内部 -> 直接信任 New
+            L_final, U_final = L_new, U_new
+            ftype = "Inside"
+            
+        elif L_final < U_final:
+            # 情况 B: 有重叠 (交集有效) -> 使用交集
+            # (L_final, U_final 已经是交集了，无需修改)
+            ftype = "Intersection"
+            
+        else:
+            # 情况 C: 完全不重叠 (Disjoint) -> 投影到边界内侧
+            # 这里的逻辑是：物理约束(Old)是硬道理，必须遵守。
+            # 如果 New 远高于 Old，说明 New 预测过高，应该取 Old 区间的"最上层"部分。
+            
+            # 保持 New 的区间宽度，但限制在 Old 内部
+            width_new = U_new - L_new
+            
+            if L_new > U_old: 
+                # New 太高 -> 挤压在 Old 的上限
+                U_final = U_old
+                # 下限设为 (上限 - 原宽度)，但不能低于 Old 下限
+                L_final = max(L_old, U_old - width_new) 
+                ftype = "Projected High"
+                
+            elif U_new < L_old:
+                # New 太低 -> 挤压在 Old 的下限
+                L_final = L_old
+                U_final = min(U_old, L_old + width_new)
+                ftype = "Projected Low"
+
+        # 4. 将最终区间 (L_final, U_final) 转换回 Mean 和 Std
+        # 反解公式：Width = 4 * Std  =>  Std = Width / 4
+        #          Mean = (L + U) / 2
+        
+        mu_result = (L_final + U_final) / 2
+        std_result = (U_final - L_final) / 4
+        
+        # 防止 std 过小 (数值稳定性)
+        std_result = max(std_result, 1e-4)
+
+        fusion_stats[ftype] += 1
+
+        # 更新 Share (比例)
+        merged.at[idx, 'mu_new'] = mu_result
+        merged.at[idx, 'std_new'] = std_result
+        merged.at[idx, 'fusion_type'] = ftype
+
+        # === 同步更新 Absolute Votes (绝对票数) ===
+        # 必须重新计算 N(t)
+        season_len = merged[merged['season'] == row['season']]['week'].max()
+        # 注意：这里需要引用全局 CONFIG，或者简单的 10.0 (million) 逻辑
+        # 建议直接调用原文件里已有的 get_total_votes 函数
+        current_total_votes = get_total_votes(row['week'], season_len)
+        
+        merged.at[idx, 'fan_votes_mean'] = mu_result * current_total_votes
+        merged.at[idx, 'fan_votes_std'] = std_result * current_total_votes
+
+    fused_df = merged.rename(columns={'mu_new': 'fan_share_mean', 'std_new': 'fan_share_std'})
+    fused_df = fused_df.drop(columns=['mu_old', 'std_old'])
+
+    print(f"  融合完成: {len(fused_df)} 条记录")
+    print(f"  融合统计:")
+    for ftype, count in fusion_stats.items():
+        print(f"    {ftype}: {count} ({count/len(fused_df)*100:.1f}%)")
+
+    return fused_df
+为什么这样做能保证包含？交集优先：如果两个区间有重叠，代码取 max(L_old, L_new) 和 min(U_old, U_new)。这在数学上保证了结果区间是旧区间的子集。投影内缩（关键点）：在旧代码中，如果新预测太高，我们将 均值 设为 U_old。这导致 U_old + 2σ 溢出。在新代码中，如果新预测太高，我们将 区间上限 (U_final) 设为 U_old，然后反推均值。这意味着最终的均值会是 U_old - 2σ。这样一来，整个正态分布的 95% 置信区间都会老老实实地待在 U_old 的左侧（内部），绝对不会越界。操作建议复制上面的代码，替换掉脚本中第 4.5 部分的 fuse_predictions 函数。确保 get_total_votes 函数在 fuse_predictions 之前已经定义（Python脚本从上往下执行，这通常没问题）。重新运行脚本，你会发现生成的蓝色曲线（融合结果）将完美地贴合在红色曲线（蒙特卡洛边界）的内部，即使在极端的“错位”情况下也不会画出界外。
+
+根据上面的两个问题和代码思路修改dual_source_particle_filter_absolute_votes.py

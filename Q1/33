@@ -1,246 +1,200 @@
-这是一个非常系统化且高要求的分析任务。第三问的核心从“预测（Prediction）”转向了**“归因（Attribution）”**。我们需要剥离出各个因素（舞伴、行业、年龄、地域）对最终结果的独立贡献，并对比这些因素在“评委眼光”和“大众审美”中的不同权重。以下是为您设计的全流程建模方案，包含逻辑链路、指标构建、模型选择、典型案例筛选逻辑以及完整的代码框架。一、 整体逻辑链路 (The Workflow)数据融合 (Data Fusion)：将原始数据（人口统计学、舞伴）与第二问算出的“隐形数据”（观众票数预估、铁粉基数）合并。特征工程 (Feature Engineering)：将复杂的类别变量（如26个行业、50个州）降维成可分析的大类（如5大行业、4大地理分区）。双模归因 (Dual-Model Attribution)：建立两个平行模型——“评委偏好模型” 与 “观众偏好模型”。效应分离 (Effect Separation)：从模型中提取系数（Coefficients）和随机效应（Random Effects），量化各维度的影响力。差异化分析 (Gap Analysis)：对比两套系数，画出森林图，找出“双标”维度。典型案例挖掘 (Case Study Mining)：基于模型残差（Residuals）找出那些“本来该赢却输了”或“本来该输却赢了”的异常点进行个案分析。二、 指标构建与定义 (Indicator Construction)我们需要构建两组目标变量 ($Y$) 和四组解释变量 ($X$)。1. 目标变量 ($Y$)：衡量“成功”的标准我们需要两个 $Y$ 来分别代表两股势力：$Y_{judge}$ (评委认可度)：定义：选手全季标准化评委分 (Z-Score) 的均值。构建：直接取 Q2 代码算出的 A_core (Ability Score)。$Y_{fan}$ (观众喜爱度)：定义：选手全季估计票数份额的均值。构建：直接取 Q2 代码算出的 fan_share_mean 或 P_avg。2. 解释变量 ($X$)：四个分析维度$X_{partner}$ (舞伴效应 - Pro Efficiency)：构建：专业舞伴是类别变量。处理：由于舞伴跨赛季重复出现，我们将使用混合效应模型 (Mixed Effects Model)，将舞伴视为“随机效应 (Random Effect)”。模型算出的 Intercept 差异就是该舞伴的“自带光环值”。$X_{industry}$ (行业偏见 - Sector Bias)：构建：将 20+ 个细分职业归纳为：Athlete (运动员), Actor (演员), Music (歌手), Reality (真人秀), Host/Other (其他)。处理：One-Hot 编码。$X_{age}$ (年龄歧视 - Age Penalty)：构建：直接使用数值型年龄。处理：为了捕捉“太老不行”或“太小不行”的非线性，可以加入年龄的平方项 ($Age^2$)。$X_{region}$ (地域因素 - Regional Base)：构建：将 Homestate 映射为美国四大普查区：Northeast, Midwest, South, West，以及 International。处理：One-Hot 编码。三、 核心模型选择：线性混合效应模型 (LMM)这是解决此类问题的S-Tier方法。为什么不用普通回归？因为普通回归无法处理“舞伴跨赛季重复出现”这一特点。LMM 可以分离出“舞伴的个人能力”和“明星的个人特征”。模型方程组：评委模型 (Judge Model):$$Y_{judge} = \beta_{0J} + \beta_{1J}Age + \beta_{2J}Industry + \beta_{3J}Region + \underbrace{u_{partnerJ}}_{\text{舞伴随机效应}} + \epsilon$$观众模型 (Fan Model):$$Y_{fan} = \beta_{0F} + \beta_{1F}Age + \beta_{2F}Industry + \beta_{3F}Region + \underbrace{u_{partnerF}}_{\text{舞伴随机效应}} + \epsilon$$我们关注什么？系数 ($\beta$)：代表行业/年龄/地域的影响。如果 $\beta_{Reality}$ 在观众模型中显著 > 0，在评委模型中 ≈ 0，说明真人秀明星“虚火”（有人气没技术）。随机效应 ($u_{partner}$)：代表舞伴的能力。$u_{Derek}$ 的值就是 Derek Hough 的“冠军制造机指数”。四、 典型案例挖掘逻辑 (Case Mining)我们通过计算**“期望”与“现实”的偏差**来找典型：意难平 (Under-appreciated / Robbed)：特征：$Y_{judge}$ (实力) 极高，但 $Y_{fan}$ (人气) 极低。筛选：算出 Gap = Rank(Judge) - Rank(Fan)，取 Gap 最大的 Top 3。皇族 (Over-rated / Cult Favorite)：特征：$Y_{judge}$ 低，但 $Y_{fan}$ 极高。筛选：取 Gap 最小的 Bottom 3 (即负数最大)。天选之子 (Total Package)：特征：两项双高，且模型预测偏差极小（说明他的红是符合模型规律的，比如又是运动员又年轻）。五、 完整代码框架 (Python)这段代码将实现全流程：数据整合 -> LMM建模 -> 指标提取 -> 可视化。你需要安装 statsmodels 库：pip install statsmodelsPythonimport pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
-from sklearn.preprocessing import StandardScaler
+我总体上感觉1-2和28-34跑的很通畅，但3-27就感觉存活率很低，经常卡断，是旧区没预测好嘛，旧区预测逻辑有考虑两种评分机制吗？？为什么会出现这种情况，怎么改
 
-class DWTS_Factor_Analyzer:
-    def __init__(self, raw_data_path, estimated_votes_path):
-        # 1. 加载原始数据 (包含 Demographics)
-        self.raw_df = pd.read_csv(raw_data_path, encoding='utf-8-sig')
-        # 2. 加载 Q2 算出的预估数据 (包含 Fan Votes)
-        self.est_df = pd.read_csv(estimated_votes_path)
-        self.merged_df = None
-        self.model_judge = None
-        self.model_fan = None
-        self.effects_df = None
+你的观察非常敏锐！这不仅是“旧模型”的问题，而是数学机制的本质差异造成的。你发现的这个现象（Rank Era 很顺畅，Percentage Era 很卡顿）正是数据科学中经典的**“解空间约束（Constraint Satisfaction）”**问题。简单来说：S1-2 和 S28+ 是在“射击库房门”（很容易中），而 S3-27 是在“射击靶心”（很难中）。以下是详细的原因分析和解决方案：1. 为什么会出现这种情况？（核心原因）你的“旧逻辑”确实考虑了两种机制，代码没有写错。问题在于这两种机制对“数据精度”的要求完全不同：排名制 (Rank System, S1-2 & S28+)：规则：$Rank_{Total} = Rank_{Judge} + Rank_{Fan}$特点（鲁棒性强）：这是一个“模糊”的系统。假设选手 A 的观众支持率是 15%，选手 B 是 16%，他们的排名可能都是“第 3 名”。粒子滤波哪怕猜稍微偏了一点（比如猜成 15.5%），算出来的排名依然不变，能通过历史检验。结果：解空间很大，粒子很容易存活。百分比制 (Percentage System, S3-27)：规则：$Score_{Total} = \%_{Judge} + \%_{Fan}$特点（敏感度高）：这是一个“精确”的系统。假设被淘汰者（Eliminated）是“高分低人气的选手（如 Sabrina Bryan）”，他在导师那里拿了 30 分（满分），导师分占比很高。为了让他被淘汰，他的观众分占比必须极低，低到一个非常精确的数值以下（比如必须小于 4.32%）。如果粒子猜他是 4.50%，在排名制里他可能还是倒数第一（存活），但在百分比制里他的总分就可能超过安全区的某个人（死亡）。结果：解空间像“走钢丝”一样窄。如果你的粒子（Particles）没有正好猜中那个极端的低分，所有粒子都会被判定为“不符合历史”，导致存活率归零（0%），触发强制重置（Fallback）。2. 旧区（S3-27）没预测好吗？不完全是。是因为 S3-27 的**“意外淘汰（Shock Elimination）”在历史上发生得非常多（因为百分比制更容易导致高分选手翻车）。
+当发生意外淘汰时，模型需要生成一个“极低观众票数”**的粒子才能解释现实。但标准的粒子生成器通常假设大家都在平均线附近波动，很难一下子跳到“极低值”，所以就被卡断了。3. 怎么改？（解决方案）要解决这个问题，我们需要在 S3-27 放宽一点“容忍度”，或者让粒子跳得更狂野一点。建议修改 dual_source_particle_filter_absolute_votes.py 中的 ScoringSystem 类。我们给百分比制的判定加一个微小的**“容错缓冲（Tolerance）”**，因为现实中的计分可能存在四舍五入的误差，且我们的模拟不应该因为 0.01% 的差距就全盘否定。修改代码如下：找到 check_elimination_constraint 方法，做以下修改：Python    @staticmethod
+    def check_elimination_constraint(total_scores, score_type,
+                                     eliminated_indices, safe_indices, season):
+        """Check if particle's scores are consistent with elimination results"""
+        if len(eliminated_indices) == 0:
+            return True
 
-    def preprocess_and_merge(self):
-        """
-        数据融合与特征工程
-        """
-        print("[Step 1] Preprocessing and merging data...")
+        elim_scores = total_scores[eliminated_indices]
+        safe_scores = total_scores[safe_indices] if len(safe_indices) > 0 else np.array([])
+
+        if len(safe_scores) == 0:
+            return True
+
+        # === 修改开始 ===
+        # 给百分比制 (S3-27) 增加一点容错空间 (Tolerance)
+        # 因为浮点数计算和历史数据的四舍五入可能导致微小的"不合法"
+        # 我们允许"被淘汰者"的分数比"安全者"高出极小的一点点 (例如 0.001)
+        TOLERANCE = 0.001 if (3 <= season < 28) else 0.0
+
+        if season >= 28:
+            # S28+: Judge Save (Bottom 2) - allow at most 1 survivor to be worse
+            if score_type == "Lower is Better":
+                worst_elim_score = np.max(elim_scores)
+                count_worse_survivors = np.sum(safe_scores > worst_elim_score)
+            else:
+                best_elim_score = np.max(elim_scores)
+                count_worse_survivors = np.sum(safe_scores < best_elim_score)
+            return count_worse_survivors <= 1
+        else:
+            # Regular Elimination (S1-27)
+            if score_type == "Higher is Better": # Percentage System
+                # 原逻辑: min(safe) > max(elim)
+                # 新逻辑: min(safe) > max(elim) - TOLERANCE
+                # 意思是：只要被淘汰者的分没有"显著"高于幸存者，就算通过
+                return np.min(safe_scores) > (np.max(elim_scores) - TOLERANCE)
+            else: # Rank System
+                return np.max(safe_scores) < np.min(elim_scores)
+        # === 修改结束 ===
+额外建议：针对 S3-27 增加粒子多样性如果加了容错还是卡，可以在 ContestantState.predict 方法里，针对 S3-27 增加一点噪声，让模型敢于猜“极端低分”。Python    def predict(self, season=None): # 注意这里要传 season 进来
+        # ...
         
-        # --- A. 聚合 Q2 数据得到每位选手的赛季均值 ---
-        # 我们需要一个选手一个点的 Summary Data
-        fan_stats = self.est_df.groupby(['season', 'celebrity']).agg({
-            'fan_votes_mean': 'mean', # 绝对票数
-            'fan_share_mean': 'mean', # 相对份额 (推荐用这个做回归，消除赛季总票数波动影响)
-            'judge_score': 'mean'     # 原始评委分
-        }).reset_index()
-
-        # --- B. 融合原始人口统计学信息 ---
-        # 注意：需要去重，因为 raw_df 是每周一行
-        demographics = self.raw_df[['season', 'celebrity_name', 'ballroom_partner', 
-                                    'celebrity_industry', 'celebrity_age_during_season', 
-                                    'celebrity_homestate']].drop_duplicates()
-        
-        self.merged_df = pd.merge(fan_stats, demographics, 
-                                  left_on=['season', 'celebrity'], 
-                                  right_on=['season', 'celebrity_name'])
-
-        # --- C. 特征工程 ---
-        
-        # 1. 行业归类 (Industry Grouping)
-        def map_industry(ind):
-            ind = str(ind).lower()
-            if any(x in ind for x in ['athlete', 'nfl', 'nba', 'olympian', 'gymnast']): return 'Athlete'
-            if any(x in ind for x in ['actor', 'actress', 'movie', 'tv']): return 'Actor'
-            if any(x in ind for x in ['singer', 'rapper', 'music', 'pop']): return 'Musician'
-            if any(x in ind for x in ['reality', 'bachelor', 'housewife']): return 'RealityStar'
-            return 'Other'
-        
-        self.merged_df['Industry_Group'] = self.merged_df['celebrity_industry'].apply(map_industry)
-
-        # 2. 地域归类 (Region Mapping)
-        # 简单映射示例，实际可完善
-        def map_region(state):
-            # 这里简化处理，你可以加上完整的州映射表
-            south = ['Texas', 'Florida', 'Georgia', 'Tennessee']
-            west = ['California', 'Nevada', 'Washington', 'Hawaii']
-            northeast = ['New York', 'Massachusetts', 'New Jersey']
-            if state in south: return 'South'
-            if state in west: return 'West'
-            if state in northeast: return 'Northeast'
-            return 'Midwest/Other' # 默认归类
+        # S3-27 经常出现高分选手因观众票过低而淘汰，需要更大的波动范围来捕捉这种情况
+        current_noise = CONFIG['BASE_VOTE_NOISE']
+        if season and 3 <= season < 28:
+            current_noise *= 2.0  # 在困难赛季翻倍噪声
             
-        self.merged_df['Region_Group'] = self.merged_df['celebrity_homestate'].apply(map_region)
+        noise = np.random.normal(0, current_noise)
+        # ...
+总结： 你的代码没有逻辑错误，是数学约束太紧了。加上这个 TOLERANCE (0.001) 之后，S3-27 的运行应该会顺畅很多，存活率也会回升。
 
-        # 3. 目标变量标准化 (Z-Score)
-        # 评委分和观众份额都需要标准化，以便比较系数大小
-        scaler = StandardScaler()
-        self.merged_df['Y_Judge'] = scaler.fit_transform(self.merged_df[['judge_score']])
-        self.merged_df['Y_Fan'] = scaler.fit_transform(self.merged_df[['fan_share_mean']])
-        
-        print(f"  -> Merged Data Shape: {self.merged_df.shape}")
 
-    def data_overview_visualization(self):
-        """
-        可视化 1: 各维度数据概览 (Overview)
-        """
-        print("[Step 2] Generating Data Overview...")
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-        
-        # Age Distribution
-        sns.histplot(self.merged_df['celebrity_age_during_season'], kde=True, ax=axes[0], color='skyblue')
-        axes[0].set_title('Age Distribution')
-        
-        # Industry Count
-        sns.countplot(y='Industry_Group', data=self.merged_df, ax=axes[1], order=self.merged_df['Industry_Group'].value_counts().index)
-        axes[1].set_title('Industry Counts')
-        
-        # Region Count
-        sns.countplot(y='Region_Group', data=self.merged_df, ax=axes[2])
-        axes[2].set_title('Region Counts')
-        
-        plt.tight_layout()
-        plt.show()
+2.我的模型有考虑意外淘汰的情况吗，或者说，考虑的准确吗。这个是我生成的很准确的一版，方便改成基于这版来考虑应该怎么约束吗
 
-    def build_mixed_effects_models(self):
-        """
-        建立混合效应模型 (LMM)
-        Fixed Effects: Age, Industry, Region
-        Random Effects: Pro Partner
-        """
-        print("[Step 3] Building Mixed Effects Models...")
-        
-        # 公式: Y ~ Age + Industry + Region + (1|Partner)
-        formula = " ~ celebrity_age_during_season + C(Industry_Group) + C(Region_Group)"
-        
-        # 1. 评委模型
-        self.model_judge = smf.mixedlm("Y_Judge" + formula, 
-                                       self.merged_df, 
-                                       groups=self.merged_df["ballroom_partner"]).fit()
-        
-        # 2. 观众模型
-        self.model_fan = smf.mixedlm("Y_Fan" + formula, 
-                                     self.merged_df, 
-                                     groups=self.merged_df["ballroom_partner"]).fit()
-        
-        print("  -> Models converged.")
-        # print(self.model_judge.summary()) # 调试用
+你的这个 competition_info_table.csv 非常关键。它提供了每一周的**“赛制元数据”**（Structural Metadata），这正是修正模型对“意外淘汰”和“退赛”判断准确性的核心拼图。
 
-    def extract_and_compare_effects(self):
-        """
-        提取系数，准备绘制森林图
-        """
-        print("[Step 4] Extracting Effects...")
+核心结论
+你的模型目前考虑了“意外淘汰”，但可能混淆了“退赛”和“淘汰”。 如果不引入这张表，模型只能通过 is_exited 标记来判断谁离开了。
+
+问题所在：如果一个高分选手（如 Season 3 的 Sara Evans）是因为退赛（Withdrew）而离开，但数据里只标记了 is_exited=True，旧模型会误以为她是被票死的，从而强行生成“她的粉丝极少”的错误估计。这会严重扭曲该选手的粉丝基本盘数据。
+
+如何改进：利用这张表里的 eliminated_count（淘汰人数）和 withdrew_count（退赛人数），我们可以精确告诉模型：“这一周这个人是退赛，不要用排名规则去约束他/她的票数！”
+
+如何基于这张“准确版”表格添加约束
+我们需要修改 dual_source_particle_filter_absolute_votes.py 的逻辑，引入这张表作为最高优先级的规则裁判。
+
+1. 修改 DualSourceEstimator 加载这张表
+在 load_data 时把这张表读进去，变成一个方便查询的字典或 DataFrame。
+
+Python
+class DualSourceEstimator:
+    def load_data(self):
+        # ... (原有代码) ...
         
-        # 提取固定效应 (Fixed Effects)
-        # 我们要把两个模型的系数拼在一起
-        params_j = self.model_judge.params.drop('Intercept') # 去掉截距
-        conf_j = self.model_judge.conf_int().drop('Intercept')
+        # [NEW] 加载赛制元数据表
+        print("  Loading competition info table...")
+        self.info_df = pd.read_csv('competition_info_table.csv')
+        # 创建一个复合键索引 (season, week) -> info_row
+        self.info_map = self.info_df.set_index(['season', 'week']).to_dict('index')
         
-        params_f = self.model_fan.params.drop('Intercept')
-        conf_f = self.model_fan.conf_int().drop('Intercept')
+        return self
+2. 修改 Particle.step 传递赛制信息
+在 step 函数中，根据当前的 season 和 week 去查表，获取这一周到底应该淘汰几个人，有没有人退赛。
+
+Python
+# 修改 run_season_estimation 中的循环
+# for week in tqdm(weeks, ...):
+#     week_info = self.info_map.get((season, week), None)  <-- 获取当周赛制信息
+#     ...
+#     if p_next.step(week_df, season, season_len, week_info): <-- 传入 step
+3. 重写 ScoringSystem.check_elimination_constraint (核心修改)
+这是最关键的一步。我们要用 eliminated_count 来决定是否启用约束，以及如何约束。
+
+Python
+    @staticmethod
+    def check_elimination_constraint(total_scores, score_type,
+                                     eliminated_indices, safe_indices, 
+                                     season, week_info=None): # [NEW] 新增 week_info 参数
         
-        # 构建绘图数据
-        effects = []
-        for idx in params_j.index:
-            # 清理变量名
-            clean_name = idx.replace("C(Industry_Group)[T.", "").replace("C(Region_Group)[T.", "").replace("]", "")
+        # === 1. 如果没有赛制表，回退到旧逻辑 ===
+        if week_info is None:
+            # ... (原有逻辑) ...
+            return True
+
+        # === 2. 获取准确的“应淘汰人数” ===
+        target_elim_count = week_info.get('eliminated_count', 0)
+        actual_exit_count = len(eliminated_indices)
+        
+        # === 3. 关键判定逻辑 ===
+        
+        # 情况 A: 本周是“非淘汰周” (target_elim_count == 0)
+        # 即使 is_exited 有人（可能是退赛），也不进行分数排名的约束！
+        if target_elim_count == 0:
+            return True  # 所有人都能存活，不强制谁必须分低
             
-            effects.append({
-                'Factor': clean_name,
-                'Type': 'Judge Preference',
-                'Coef': params_j[idx],
-                'Lower': conf_j.loc[idx][0],
-                'Upper': conf_j.loc[idx][1]
-            })
-            effects.append({
-                'Factor': clean_name,
-                'Type': 'Fan Preference',
-                'Coef': params_f[idx],
-                'Lower': conf_f.loc[idx][0],
-                'Upper': conf_f.loc[idx][1]
-            })
+        # 情况 B: 正常的淘汰 (target_elim_count > 0)
+        # 我们只约束“真正因分数低而淘汰”的人
+        
+        # 这里的难点是：week_df 里的 eliminated_indices 可能包含了退赛的人
+        # 如果 is_exited 的人数 > 应淘汰人数，说明混入了退赛者
+        # 简单处理：假设分数最低的那 target_elim_count 个人才是被淘汰的
+        # 但我们无法在不知道谁是谁的情况下区分。
+        
+        # 更好的策略：
+        # 如果 dataset 里的 is_exited 只是单纯的“离开”，我们需要更细的逻辑。
+        # 但通常退赛者不会参与当周评分。如果他们有分，说明是比完才退或者中途退。
+        
+        # --- 约束执行 ---
+        elim_scores = total_scores[eliminated_indices]
+        safe_scores = total_scores[safe_indices] if len(safe_indices) > 0 else np.array([])
+        
+        if len(safe_scores) == 0:
+            return True
+
+        # [精准约束]
+        # 只有真正因分低淘汰的人，分数才必须低于幸存者。
+        # 如果这一周是“双淘汰”，那分数最低的2个人必须在 eliminated_indices 里。
+        
+        # 获取所有人的分数并排序，找到“安全线”
+        all_scores = np.concatenate([safe_scores, elim_scores])
+        
+        # 如果是“分数越高越好” (S3-27)
+        if score_type == "Higher is Better":
+            # 找到第 N 低的分数作为阈值 (N = target_elim_count)
+            # 例如淘汰1人，那所有幸存者必须 > 第1低的分数
+            # 但被淘汰者本身的分数必须 <= 阈值
             
-        self.effects_df = pd.DataFrame(effects)
-
-    def analyze_pro_partners(self):
-        """
-        分析舞伴效应 (Random Effects)
-        """
-        print("[Step 5] Analyzing Pro Partners...")
-        
-        # 提取随机效应 (Best Linear Unbiased Predictors - BLUPs)
-        re_judge = self.model_judge.random_effects
-        re_fan = self.model_fan.random_effects
-        
-        partners = []
-        for name in re_judge.keys():
-            partners.append({
-                'Partner': name,
-                'Judge_Buff': re_judge[name][0], # 舞伴对评委分的影响
-                'Fan_Buff': re_fan[name][0]      # 舞伴对观众票的影响
-            })
+            # 简化版：幸存者的最低分 > 被淘汰者的最高分 (针对单人淘汰)
+            # 针对多人淘汰 (双淘汰)：
+            # 幸存者的最低分 > 第 (target_elim_count) 低的分数
             
-        partner_df = pd.DataFrame(partners)
-        
-        # 找出 "冠军制造机" (Judge Buff 高) 和 "人气王舞伴" (Fan Buff 高)
-        top_judge_partners = partner_df.nlargest(5, 'Judge_Buff')
-        top_fan_partners = partner_df.nlargest(5, 'Fan_Buff')
-        
-        print("\nTop Partners (Technical/Judge):")
-        print(top_judge_partners[['Partner', 'Judge_Buff']])
-        print("\nTop Partners (Popularity/Fan):")
-        print(top_fan_partners[['Partner', 'Fan_Buff']])
-        
-        return partner_df
+            # 使用之前的 TOLERANCE 逻辑
+            TOLERANCE = 0.001 if (3 <= season < 28) else 0.0
+            
+            # 找出本周所有被标记为 exit 的人的分数
+            # 如果其中混有退赛者（通常退赛者分高），这个 max(elim_scores) 会很高
+            # 这会导致约束过强（强迫所有幸存者比退赛者分还高，这不对！）
+            
+            # [修正]：
+            # 如果 actual_exit_count > target_elim_count (说明有人退赛)
+            # 我们应该只取 elim_scores 里最低的那 target_elim_count 个分数来做基准
+            
+            sorted_elim_scores = np.sort(elim_scores) # 升序
+            # 取真正的“淘汰分数线”：即被淘汰者中分数较高的那一位（但不包含退赛的高分）
+            # 假设退赛者分数是离群的高值，真正的淘汰者是低分
+            valid_elim_scores = sorted_elim_scores[:target_elim_count] 
+            
+            threshold = np.max(valid_elim_scores)
+            
+            return np.min(safe_scores) > (threshold - TOLERANCE)
 
-    def visualize_forest_plot(self):
-        """
-        可视化 2: 森林图 (Forest Plot) - 核心归因图
-        """
-        plt.figure(figsize=(12, 8))
-        
-        # 绘制点估计和误差棒
-        sns.pointplot(data=self.effects_df, x='Coef', y='Factor', hue='Type', 
-                      join=False, dodge=0.4, capsize=0.2, palette=['#1f77b4', '#ff7f0e'])
-        
-        # 添加 0 线
-        plt.axvline(0, color='grey', linestyle='--', alpha=0.5)
-        plt.title('Attribution Analysis: What drives Judges vs. Fans? (Forest Plot)', fontsize=16)
-        plt.xlabel('Standardized Effect Size (Beta Coefficient)')
-        plt.grid(True, alpha=0.3)
-        plt.show()
+        else: 
+            # 排名制 "Lower is Better" (分越低越好)
+            # 幸存者的最大分 (最差排名) < 真正淘汰者的最小分 (最好排名)
+            
+            # 同样处理退赛者：退赛者可能排名很高 (数值小)，要排除掉
+            # 真正的淘汰者应该是排名数值最大的那些人 (倒数第一，倒数第二)
+            
+            # 降序排列 (数值从大到小，即排名从差到好)
+            sorted_elim_scores = np.sort(elim_scores)[::-1]
+            valid_elim_scores = sorted_elim_scores[:target_elim_count]
+            
+            threshold = np.min(valid_elim_scores)
+            
+            return np.max(safe_scores) < threshold
 
-    def visualize_case_studies_radar(self):
-        """
-        可视化 3: 典型人物雷达图
-        """
-        print("[Step 6] Mining Case Studies...")
-        
-        # 计算偏差: Rank Gap
-        self.merged_df['Rank_Judge'] = self.merged_df['Y_Judge'].rank(ascending=False)
-        self.merged_df['Rank_Fan'] = self.merged_df['Y_Fan'].rank(ascending=False)
-        self.merged_df['Gap'] = self.merged_df['Rank_Judge'] - self.merged_df['Rank_Fan']
-        
-        # 选人: Gap最大的正值(意难平), Gap最小的负值(皇族)
-        robbed = self.merged_df.nlargest(1, 'Gap').iloc[0]
-        overrated = self.merged_df.nsmallest(1, 'Gap').iloc[0]
-        
-        cases = [robbed, overrated]
-        
-        # 准备雷达图数据 (归一化到 0-1 以便画图)
-        categories = ['Technical Score', 'Fan Votes', 'Partner Buff', 'Industry Bonus', 'Youth Bonus']
-        
-        # 为了画图，需要简单的归一化逻辑 (这里仅示意)
-        # 实际代码需要从模型结果里提取该人的 Industry Bonus 等
-        
-        print(f"Selected Cases: Robbed={robbed['celebrity']}, Overrated={overrated['celebrity']}")
-        # (此处省略具体的 Radar Chart 画图代码，可使用 matplotlib polar projection)
+总结
+你生成的这版表格非常有用！把它加进去后，模型将能：
 
-# ================= 使用示例 =================
-# analyzer = DWTS_Factor_Analyzer('raw_data.csv', 'estimated_votes.csv')
-# analyzer.preprocess_and_merge()
-# analyzer.data_overview_visualization() # 概览
-# analyzer.build_mixed_effects_models()  # 建模
-# analyzer.extract_and_compare_effects() # 提取系数
-# analyzer.visualize_forest_plot()       # 森林图 (关键输出)
-# partner_stats = analyzer.analyze_pro_partners() # 舞伴分析
-六、 可视化构建指南 (Visualization Strategy)基于模型算出的数据，您的三张核心图表应该这样画：森林图 (Forest Plot)：数据源：extract_and_compare_effects 生成的 effects_df。看点：如果 "Athlete" 的橙色点（观众）在 0 右边很远，蓝色点（评委）在 0 附近，直接证明了“运动员在观众中有巨大优势，但在评委眼中一般”。舞伴散点图/热力图：数据源：analyze_pro_partners 生成的 partner_df。画法：X轴 = Judge Buff，Y轴 = Fan Buff。看点：落在右上角的舞伴（如 Derek Hough）就是“既能教好技术，又有人格魅力”的六边形战士；落在右下角的舞伴是“技术流但吸粉差”。典型人物雷达图：数据源：从 merged_df 中筛选出的特定行。画法：五个维度（技术分、观众分、舞伴加成、行业优势、年龄优势）。看点：Bobby Bones 的雷达图会呈现“技术分极度凹陷，但观众分、地域优势拉满”的形状。这个方案保证了逻辑的连贯性：从数据融合 -> 科学归因 (LMM) -> 量化对比 (Forest Plot) -> 个案验证。这正是数模竞赛中最受青睐的闭环结构。
+完美处理“退赛”：不会再强迫退赛的高分选手变成“低人气选手”。
 
-这是第三问的模型和伪代码，请在该目录下新建一个Q3文件夹并新建代码文件来完成第三题的模型搭建，请将其转化为完整的可运行代码，并优化可视化方案，线条颜色优化，字体加粗：所有 set_title 和 suptitle 都增加了 fontweight='bold' 参数。
+识别“非淘汰周”：不会在没人淘汰的周次里，强行把倒数第一名标记为“危险”，从而保护了低分但幸运的选手。
+
+精确处理“双淘汰”：准确划定只有倒数两名才会被淘汰，而不是倒数一名。
+
+这将极大地提高你对 Season 3-27 这种复杂赛制季的模拟存活率和准确度。
+
+根据上面提出的两个问题和解决思路，修改dual_source_particle_filter_absolute_votes.py和fan_percent_estimation.py文件,修复它们各自的模型漏洞
