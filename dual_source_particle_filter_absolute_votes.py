@@ -202,8 +202,18 @@ class ScoringSystem:
 
     @staticmethod
     def check_elimination_constraint(total_scores, score_type,
-                                     eliminated_indices, safe_indices, season):
-        """Check if particle's scores are consistent with elimination results"""
+                                     eliminated_indices, safe_indices, season, week_info=None):
+        """
+        Check if particle's scores are consistent with elimination results
+
+        Args:
+            total_scores: Array of total scores for all contestants
+            score_type: "Higher is Better" or "Lower is Better"
+            eliminated_indices: Indices of eliminated contestants
+            safe_indices: Indices of safe contestants
+            season: Season number
+            week_info: Dict with competition metadata (eliminated_count, withdrew_count, etc.)
+        """
         if len(eliminated_indices) == 0:
             return True
 
@@ -213,6 +223,43 @@ class ScoringSystem:
         if len(safe_scores) == 0:
             return True
 
+        # === Add tolerance for S3-27 (Percentage System) ===
+        # Floating-point calculations and historical data rounding may cause tiny "illegal" values
+        # We allow eliminated contestants' scores to be slightly higher than safe contestants
+        TOLERANCE = 0.001 if (3 <= season < 28) else 0.0
+
+        # === Use week_info for accurate constraint checking ===
+        if week_info is not None:
+            target_elim_count = week_info.get('eliminated_count', 0)
+            actual_exit_count = len(eliminated_indices)
+
+            # Case A: Non-elimination week (target_elim_count == 0)
+            # Even if someone exited (possibly withdrew), don't enforce score ranking constraints
+            if target_elim_count == 0:
+                return True
+
+            # Case B: Normal elimination (target_elim_count > 0)
+            # Only constrain those who were truly eliminated due to low scores
+            # If actual_exit_count > target_elim_count, some are withdrawals
+            # We should only use the lowest target_elim_count scores as the baseline
+
+            if score_type == "Higher is Better":  # Percentage System (S3-27)
+                # Sort eliminated scores in ascending order
+                sorted_elim_scores = np.sort(elim_scores)
+                # Take only the truly eliminated (lowest scores, excluding high-scoring withdrawals)
+                valid_elim_scores = sorted_elim_scores[:target_elim_count]
+                threshold = np.max(valid_elim_scores)
+                return np.min(safe_scores) > (threshold - TOLERANCE)
+
+            else:  # Rank System (S1-2, S28+) - "Lower is Better"
+                # Sort eliminated scores in descending order (worst ranks first)
+                sorted_elim_scores = np.sort(elim_scores)[::-1]
+                # Take only the truly eliminated (worst ranks, excluding good-ranking withdrawals)
+                valid_elim_scores = sorted_elim_scores[:target_elim_count]
+                threshold = np.min(valid_elim_scores)
+                return np.max(safe_scores) < threshold
+
+        # === Fallback to original logic if week_info not available ===
         if season >= 28:
             # S28+: Judge Save (Bottom 2) - allow at most 1 survivor to be worse
             if score_type == "Lower is Better":
@@ -225,7 +272,7 @@ class ScoringSystem:
         else:
             # Regular Elimination (S1-27)
             if score_type == "Higher is Better":
-                return np.min(safe_scores) > np.max(elim_scores)
+                return np.min(safe_scores) > (np.max(elim_scores) - TOLERANCE)
             else:
                 return np.max(safe_scores) < np.min(elim_scores)
 
@@ -306,7 +353,7 @@ class Particle:
         self.history = []
         self.weight = 1.0
 
-    def step(self, week_df, season, season_len, force_survival=False):
+    def step(self, week_df, season, season_len, force_survival=False, week_info=None):
         """
         Advance particle by one week and check consistency
 
@@ -317,6 +364,7 @@ class Particle:
             season: Season number
             season_len: Total season length (for N(t) calculation)
             force_survival: If True, ignore elimination constraints (keep prediction anyway)
+            week_info: Dict with competition metadata (eliminated_count, withdrew_count, etc.)
 
         Returns:
             Boolean: True if particle is consistent with observations
@@ -379,7 +427,7 @@ class Particle:
             )
 
             is_consistent = ScoringSystem.check_elimination_constraint(
-                total_scores, score_type, eliminated_idx, safe_idx, season
+                total_scores, score_type, eliminated_idx, safe_idx, season, week_info
             )
 
         # 7. Record snapshot if consistent
@@ -431,6 +479,26 @@ class DualSourceEstimator:
         print(f"  Loaded {len(self.df)} records")
         print(f"  Seasons: {sorted(self.df['season'].unique())}")
         print(f"  Contestants: {self.df['celebrity'].nunique()}")
+
+        # [NEW] Load competition info table for accurate elimination/withdrawal tracking
+        try:
+            print("  Loading competition info table...")
+            self.info_df = pd.read_csv('competition_info_table.csv', encoding='utf-8-sig')
+            # Create composite key index (season, week) -> info_row for fast lookup
+            self.info_map = {}
+            for _, row in self.info_df.iterrows():
+                key = (int(row['season']), int(row['week']))
+                self.info_map[key] = {
+                    'eliminated_count': int(row['eliminated_count']) if pd.notna(row['eliminated_count']) else 0,
+                    'withdrew_count': int(row['withdrew_count']) if pd.notna(row['withdrew_count']) else 0,
+                    'scoring_system': row.get('scoring_system', 'Unknown')
+                }
+            print(f"  Loaded competition info for {len(self.info_map)} (season, week) pairs")
+        except FileNotFoundError:
+            print("  Warning: competition_info_table.csv not found, using fallback logic")
+            self.info_df = None
+            self.info_map = {}
+
         return self
 
     def run_season_estimation(self, season_df, contestant_correlations=None):
@@ -465,12 +533,15 @@ class DualSourceEstimator:
         for week in tqdm(weeks, desc=f"  S{season}", leave=False):
             week_df = season_df[season_df['week'] == week]
 
+            # Get competition info for this week (if available)
+            week_info = self.info_map.get((season, week), None)
+
             # --- Step A: Particle propagation and validation (Standard) ---
             valid_particles = []
             for p in particles:
                 p_next = copy.deepcopy(p)
                 # Normal attempt without forcing
-                if p_next.step(week_df, season, season_len, force_survival=False):
+                if p_next.step(week_df, season, season_len, force_survival=False, week_info=week_info):
                     valid_particles.append(p_next)
 
             # --- Step B & C: Handling Depletion with Fallback ---
@@ -486,7 +557,7 @@ class DualSourceEstimator:
                     for p in particles:  # Use previous week's particles
                         p_next = copy.deepcopy(p)
                         # KEY FIX: Enable force_survival=True, ignore elimination constraints
-                        p_next.step(week_df, season, season_len, force_survival=True)
+                        p_next.step(week_df, season, season_len, force_survival=True, week_info=week_info)
                         fallback_particles.append(p_next)
                     valid_particles = fallback_particles
                     survival_rate = 0.001  # Mark as extremely low confidence, but keep data

@@ -634,6 +634,25 @@ class FanPercentEstimator:
         self.processed_data = None
         self.estimation_results = None
 
+        # [NEW] Load competition info table for accurate elimination/withdrawal tracking
+        try:
+            print("  Loading competition info table...")
+            self.info_df = pd.read_csv('competition_info_table.csv', encoding='utf-8-sig')
+            # Create composite key index (season, week) -> info_row for fast lookup
+            self.info_map = {}
+            for _, row in self.info_df.iterrows():
+                key = (int(row['season']), int(row['week']))
+                self.info_map[key] = {
+                    'eliminated_count': int(row['eliminated_count']) if pd.notna(row['eliminated_count']) else 0,
+                    'withdrew_count': int(row['withdrew_count']) if pd.notna(row['withdrew_count']) else 0,
+                    'scoring_system': row.get('scoring_system', 'Unknown')
+                }
+            print(f"  Loaded competition info for {len(self.info_map)} (season, week) pairs")
+        except FileNotFoundError:
+            print("  Warning: competition_info_table.csv not found, using fallback logic")
+            self.info_df = None
+            self.info_map = {}
+
     def preprocess_data(self):
         """数据预处理：提取每周的评委分、淘汰信息和排名"""
         print("=" * 60)
@@ -774,7 +793,8 @@ class FanPercentEstimator:
 
     def check_percentage_constraints_fast(self, judge_percent, fan_percent,
                                           survivor_idx, exited_idx,
-                                          finals_rank_idx, exited_placement_idx):
+                                          finals_rank_idx, exited_placement_idx,
+                                          season=None, week_info=None):
         """
         检查百分比制约束 (Seasons 3-27) - 优化版本（纯NumPy）
 
@@ -785,11 +805,16 @@ class FanPercentEstimator:
         - exited_idx: 退出者索引数组 (NumPy)
         - finals_rank_idx: 决赛排名索引数组 (NumPy, 按final_rank排序) 或 None
         - exited_placement_idx: 退出者按placement排序的索引数组 (NumPy) 或 None
+        - season: 赛季编号 (用于确定TOLERANCE)
+        - week_info: 比赛元数据字典 (包含eliminated_count, withdrew_count等)
 
         返回：
         - True/False
         """
         total_percent = judge_percent + fan_percent
+
+        # Add tolerance for S3-27 (Percentage System)
+        TOLERANCE = 0.001 if (season and 3 <= season < 28) else 0.0
 
         # 决赛周逻辑
         if finals_rank_idx is not None and len(finals_rank_idx) > 0:
@@ -802,11 +827,29 @@ class FanPercentEstimator:
         if len(exited_idx) == 0:
             return True
 
-        # 约束1：幸存者 vs 退出者
+        # Use week_info to distinguish eliminated from withdrawn
+        actual_exited_idx = exited_idx
+        if week_info is not None:
+            target_elim_count = week_info.get('eliminated_count', 0)
+
+            # Non-elimination week: no constraint needed
+            if target_elim_count == 0:
+                return True
+
+            # If actual exits > target eliminations, some are withdrawals
+            # Only use the lowest-scoring contestants as truly eliminated
+            if len(exited_idx) > target_elim_count:
+                exited_scores = total_percent[exited_idx]
+                # Sort indices by score (ascending for percentage system - lower is worse)
+                sorted_indices = exited_idx[np.argsort(exited_scores)]
+                # Take only the lowest target_elim_count as truly eliminated
+                actual_exited_idx = sorted_indices[:target_elim_count]
+
+        # 约束1：幸存者 vs 退出者 (with TOLERANCE)
         if len(survivor_idx) > 0:
             min_survivor = np.min(total_percent[survivor_idx])
-            max_exited = np.max(total_percent[exited_idx])
-            if min_survivor <= max_exited:
+            max_exited = np.max(total_percent[actual_exited_idx])
+            if min_survivor <= max_exited + TOLERANCE:
                 return False
 
         # 约束2：退出者内部按placement排序
@@ -820,7 +863,8 @@ class FanPercentEstimator:
     def check_rank_constraints_fast(self, judge_percent, fan_percent,
                                    survivor_idx, exited_idx,
                                    finals_rank_idx, exited_placement_idx,
-                                   allow_ties=False, skip_placement=False):
+                                   allow_ties=False, skip_placement=False,
+                                   season=None, week_info=None):
         """
         检查排名制约束 (Seasons 1-2, 28-34) - 优化版本（纯NumPy + 容错机制）
 
@@ -833,6 +877,8 @@ class FanPercentEstimator:
         - exited_placement_idx: 退出者按placement排序的索引数组 (NumPy) 或 None
         - allow_ties: 是否允许平局（放宽约束为 >= 而非 >）
         - skip_placement: 是否跳过placement内部约束
+        - season: 赛季编号
+        - week_info: 比赛元数据字典 (包含eliminated_count, withdrew_count等)
 
         返回：
         - True/False
@@ -857,10 +903,28 @@ class FanPercentEstimator:
         if len(exited_idx) == 0:
             return True
 
+        # Use week_info to distinguish eliminated from withdrawn
+        actual_exited_idx = exited_idx
+        if week_info is not None:
+            target_elim_count = week_info.get('eliminated_count', 0)
+
+            # Non-elimination week: no constraint needed
+            if target_elim_count == 0:
+                return True
+
+            # If actual exits > target eliminations, some are withdrawals
+            # Only use the worst-ranked contestants as truly eliminated
+            if len(exited_idx) > target_elim_count:
+                exited_ranks = total_rank_sum[exited_idx]
+                # Sort indices by rank sum (descending - higher is worse for rank system)
+                sorted_indices = exited_idx[np.argsort(exited_ranks)[::-1]]
+                # Take only the worst target_elim_count as truly eliminated
+                actual_exited_idx = sorted_indices[:target_elim_count]
+
         # 约束1：幸存者 vs 退出者
         if len(survivor_idx) > 0:
             max_survivor = np.max(total_rank_sum[survivor_idx])
-            min_exited = np.min(total_rank_sum[exited_idx])
+            min_exited = np.min(total_rank_sum[actual_exited_idx])
 
             if allow_ties:
                 # 放宽约束：允许平局
@@ -986,6 +1050,9 @@ class FanPercentEstimator:
         返回：
         - 每位选手的观众分样本
         """
+        # Get competition info for this week (if available)
+        week_info = self.info_map.get((season, week), None)
+
         n_contestants = len(week_data)
 
         # 归一化评委分为百分比（转为NumPy数组）
@@ -1039,14 +1106,16 @@ class FanPercentEstimator:
                 is_valid = self.check_percentage_constraints_fast(
                     judge_percent, fan_percent,
                     survivor_idx, exited_idx,
-                    finals_rank_idx, exited_placement_idx
+                    finals_rank_idx, exited_placement_idx,
+                    season, week_info
                 )
             else:
                 is_valid = self.check_rank_constraints_fast(
                     judge_percent, fan_percent,
                     survivor_idx, exited_idx,
                     finals_rank_idx, exited_placement_idx,
-                    allow_ties=False, skip_placement=False
+                    allow_ties=False, skip_placement=False,
+                    season=season, week_info=week_info
                 )
 
             if is_valid:
@@ -1062,7 +1131,8 @@ class FanPercentEstimator:
                     judge_percent, fan_percent,
                     survivor_idx, exited_idx,
                     finals_rank_idx, exited_placement_idx,
-                    allow_ties=True, skip_placement=False
+                    allow_ties=True, skip_placement=False,
+                    season=season, week_info=week_info
                 )
                 if is_valid:
                     valid_samples.append(fan_percent)
@@ -1077,7 +1147,8 @@ class FanPercentEstimator:
                     judge_percent, fan_percent,
                     survivor_idx, exited_idx,
                     finals_rank_idx, exited_placement_idx,
-                    allow_ties=True, skip_placement=True
+                    allow_ties=True, skip_placement=True,
+                    season=season, week_info=week_info
                 )
                 if is_valid:
                     valid_samples.append(fan_percent)
